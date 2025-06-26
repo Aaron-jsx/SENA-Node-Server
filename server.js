@@ -50,16 +50,22 @@ io.on("connection", (socket) => {
         socket.salaId = salaId;
 
         // Enviar lista de participantes existentes al nuevo usuario
-        const otherParticipants = Array.from(room.participants.entries())
+        const participantsInfo = Array.from(room.participants.entries())
             .filter(([id]) => id !== socket.id)
-            .map(([id]) => id);
+            .map(([id, info]) => ({
+                id,
+                ...info
+            }));
 
-        socket.emit('all-users', otherParticipants);
+        socket.emit('existing-participants', participantsInfo);
 
-        // Notificar a todos los participantes de la sala
-        io.to(salaId).emit('update-participant-list', 
-            Object.fromEntries(room.participants)
-        );
+        // Notificar a otros participantes sobre el nuevo usuario
+        socket.to(salaId).emit('user-joined', {
+            id: socket.id,
+            userId,
+            userName,
+            userType
+        });
 
         console.log(`Usuario ${userName} se unió exitosamente a la sala ${salaId}`);
         console.log(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
@@ -74,12 +80,21 @@ io.on("connection", (socket) => {
         }
 
         const participant = room.participants.get(socket.id);
+        if (!participant) {
+            console.error(`Error: No se encontró información del participante ${socket.id}`);
+            return;
+        }
+
         console.log(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
 
-        io.to(payload.userToSignal).emit('user-offering', {
+        io.to(payload.userToSignal).emit('user-joined-with-signal', {
             signal: payload.signal,
-            callerId: payload.callerId,
-            callerInfo: room.participants.get(payload.callerId)
+            callerId: socket.id,
+            callerInfo: {
+                userId: participant.userId,
+                userName: participant.userName,
+                userType: participant.userType
+            }
         });
     });
 
@@ -91,11 +106,21 @@ io.on("connection", (socket) => {
         }
 
         const participant = room.participants.get(socket.id);
+        if (!participant) {
+            console.error(`Error: No se encontró información del participante ${socket.id}`);
+            return;
+        }
+
         console.log(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
 
         io.to(payload.callerId).emit('receiving-returned-signal', {
             signal: payload.signal,
-            id: socket.id
+            id: socket.id,
+            userInfo: {
+                userId: participant.userId,
+                userName: participant.userName,
+                userType: participant.userType
+            }
         });
     });
 
