@@ -71,17 +71,24 @@ io.on("connection", (socket) => {
 
     // Unirse a una sala
     socket.on("join-room", ({ salaId, userId, userName, userType }) => {
-        console.log(`Usuario ${userName} (${userType}) está uniéndose a la sala ${salaId}`);
+        // Asegurarse de que salaId sea una cadena para evitar problemas de comparación
+        salaId = String(salaId);
+        
+        console.log(`Usuario ${userName} (${userType}, ID: ${userId}) está uniéndose a la sala ${salaId}`);
+        console.log(`Socket ID: ${socket.id}`);
 
         // Crear la sala si no existe
         if (!rooms.has(salaId)) {
+            console.log(`Creando nueva sala: ${salaId}`);
             rooms.set(salaId, {
                 participants: new Map(),
                 createdAt: new Date(),
                 messages: [],
-                polls: [], // Agregar array para almacenar encuestas
-                notifications: [] // Agregar array para almacenar notificaciones
+                polls: [],
+                notifications: []
             });
+        } else {
+            console.log(`Sala existente: ${salaId}, Participantes actuales: ${rooms.get(salaId).participants.size}`);
         }
 
         const room = rooms.get(salaId);
@@ -108,10 +115,14 @@ io.on("connection", (socket) => {
                 id,
                 ...info
             }));
+        
+        console.log(`Enviando ${participantsInfo.length} participantes existentes a ${userName}`);
+        console.log('Participantes:', participantsInfo.map(p => `${p.userName} (${p.id})`));
 
         socket.emit('existing-participants', participantsInfo);
 
         // Notificar a otros participantes sobre el nuevo usuario
+        console.log(`Notificando a otros participantes sobre ${userName}`);
         socket.to(salaId).emit('user-joined', {
             id: socket.id,
             userId,
@@ -146,7 +157,16 @@ io.on("connection", (socket) => {
             return;
         }
         
-        console.log(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
+        console.log(`Señal enviada de ${participant.userName} (${socket.id}) a ${payload.userToSignal}`);
+        
+        // Verificar si el destinatario existe
+        const targetParticipant = Array.from(room.participants.entries())
+            .find(([id, _]) => id === payload.userToSignal);
+        
+        if (!targetParticipant) {
+            console.error(`Error: El destinatario ${payload.userToSignal} no existe en la sala ${socket.salaId}`);
+            return;
+        }
 
         io.to(payload.userToSignal).emit('user-joined-with-signal', {
             signal: payload.signal, 
@@ -172,7 +192,16 @@ io.on("connection", (socket) => {
             return;
         }
         
-        console.log(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
+        console.log(`Señal devuelta de ${participant.userName} (${socket.id}) a ${payload.callerId}`);
+        
+        // Verificar si el destinatario existe
+        const targetParticipant = Array.from(room.participants.entries())
+            .find(([id, _]) => id === payload.callerId);
+        
+        if (!targetParticipant) {
+            console.error(`Error: El destinatario ${payload.callerId} no existe en la sala ${socket.salaId}`);
+            return;
+        }
 
         io.to(payload.callerId).emit('receiving-returned-signal', {
             signal: payload.signal,
@@ -515,41 +544,83 @@ io.on("connection", (socket) => {
         });
     });
 
-    // Manejo de desconexión
+    // Manejar desconexiones
     socket.on('disconnect', () => {
-        const salaId = socket.salaId;
-        if (!salaId) {
-            // Verificar si era una conexión de actualizaciones en tiempo real
-            for (const [userId, connection] of realTimeConnections.entries()) {
-                if (connection.socketId === socket.id) {
-                    console.log(`Usuario ${userId} desconectado de actualizaciones en tiempo real`);
-                    realTimeConnections.delete(userId);
-                    break;
+        console.log(`Usuario desconectado: ${socket.id}`);
+        
+        // Buscar en todas las salas
+        for (const [salaId, room] of rooms.entries()) {
+            if (room.participants.has(socket.id)) {
+                const participant = room.participants.get(socket.id);
+                console.log(`El usuario ${participant.userName} (${socket.id}) ha salido de la sala ${salaId}`);
+                
+                // Notificar a otros participantes
+                socket.to(salaId).emit('user-left', {
+                    id: socket.id,
+                    userId: participant.userId,
+                    userName: participant.userName
+                });
+                
+                // Eliminar participante de la sala
+                room.participants.delete(socket.id);
+                console.log(`Participantes restantes en la sala ${salaId}: ${room.participants.size}`);
+                
+                // Si no quedan participantes, eliminar la sala después de un tiempo
+                if (room.participants.size === 0) {
+                    console.log(`La sala ${salaId} está vacía, se eliminará en 5 minutos si nadie se une`);
+                    setTimeout(() => {
+                        // Verificar nuevamente si la sala sigue vacía
+                        const currentRoom = rooms.get(salaId);
+                        if (currentRoom && currentRoom.participants.size === 0) {
+                            console.log(`Eliminando sala vacía: ${salaId}`);
+                            rooms.delete(salaId);
+                        }
+                    }, 300000); // 5 minutos
                 }
+                
+                break; // El usuario solo puede estar en una sala a la vez
             }
+        }
+        
+        // Eliminar de las conexiones en tiempo real
+        for (const [userId, connection] of realTimeConnections.entries()) {
+            if (connection.socketId === socket.id) {
+                console.log(`Eliminando conexión en tiempo real para el usuario ${userId}`);
+                realTimeConnections.delete(userId);
+                break;
+            }
+        }
+    });
+
+    // Manejar ICE candidates
+    socket.on('ice-candidate', ({ to, candidate }) => {
+        const room = rooms.get(socket.salaId);
+        if (!room) {
+            console.error(`Error: Usuario ${socket.id} intentó enviar ICE candidate pero no está en una sala válida`);
+            return;
+        }
+
+        const participant = room.participants.get(socket.id);
+        if (!participant) {
+            console.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
         
-        const room = rooms.get(salaId);
-        if (!room) return;
-
-        const participant = room.participants.get(socket.id);
-        if (participant) {
-            console.log(`Usuario ${participant.userName} se desconectó de la sala ${salaId}`);
-            room.participants.delete(socket.id);
-
-            // Notificar a otros participantes
-            io.to(salaId).emit('user-left', socket.id);
-            io.to(salaId).emit('update-participant-list', 
-                Object.fromEntries(room.participants)
-            );
-
-            // Eliminar la sala si está vacía
-            if (room.participants.size === 0) {
-                console.log(`Sala ${salaId} cerrada por falta de participantes`);
-                rooms.delete(salaId);
-            }
+        console.log(`ICE candidate enviado de ${participant.userName} (${socket.id}) a ${to}`);
+        
+        // Verificar si el destinatario existe
+        const targetParticipant = Array.from(room.participants.entries())
+            .find(([id, _]) => id === to);
+        
+        if (!targetParticipant) {
+            console.error(`Error: El destinatario ${to} no existe en la sala ${socket.salaId}`);
+            return;
         }
+
+        io.to(to).emit('ice-candidate', { 
+            from: socket.id,
+            candidate 
+        });
     });
 });
 
