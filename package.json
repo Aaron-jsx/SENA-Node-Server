@@ -1,0 +1,16 @@
+{
+  "name": "sena-videollamada",
+  "version": "1.0.0",
+  "description": "Servidor de señalización WebRTC para el proyecto SENA",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "Asistente Gemini",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.19.2",
+    "mysql2": "^3.9.7",
+    "socket.io": "^4.7.5"
+  }
+} 
