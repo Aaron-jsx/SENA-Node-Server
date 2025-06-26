@@ -34,7 +34,7 @@ function log(message, data = null, type = 'info') {
 
 server.listen(PORT, () => {
     log(`Servidor de señalización iniciado en el puerto ${PORT}`);
-    log(`URL del servidor: https://sena-node-server.onrender.com:${PORT}`);
+    log(`URL del servidor: https://sena-node-server.onrender.com${PORT}`);
 });
 
 // Dentro de la definición de rooms, agregar polls para almacenar encuestas
