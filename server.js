@@ -11,370 +11,186 @@ const io = new socketIo.Server(server, {
     }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-const rooms = {};
+// Almacena información de las salas activas
+const rooms = new Map();
 
 io.on("connection", (socket) => {
-  const { userId, userName, userType } = socket.handshake.query;
+    console.log(`Nueva conexión establecida: ${socket.id}`);
 
-  console.log(`🟢 ${userName} (${userType}) se conectó con ID: ${socket.id}`);
+    // Unirse a una sala
+    socket.on("join-room", ({ salaId, userId, userName, userType }) => {
+        console.log(`Usuario ${userName} (${userType}) está uniéndose a la sala ${salaId}`);
 
-  socket.on("disconnect", () => {
-    console.log(`🔴 ${userName} (${userType}) se desconectó`);
-  });
-});
+        // Crear la sala si no existe
+        if (!rooms.has(salaId)) {
+            rooms.set(salaId, {
+                participants: new Map(),
+                createdAt: new Date(),
+                messages: []
+            });
+        }
 
+        const room = rooms.get(salaId);
         
-        // Guardar la sala en el socket para referencia futura
+        // Agregar participante a la sala
+        room.participants.set(socket.id, {
+            userId,
+            userName,
+            userType,
+            joinedAt: new Date(),
+            raisedHand: false,
+            isAudioEnabled: true,
+            isVideoEnabled: true
+        });
+
+        // Unir el socket a la sala
+        socket.join(salaId);
         socket.salaId = salaId;
 
-        rooms[salaId].participants[socket.id] = { userId, userName, userType, raisedHand: false };
-        
-        socket.join(salaId);
+        // Enviar lista de participantes existentes al nuevo usuario
+        const otherParticipants = Array.from(room.participants.entries())
+            .filter(([id]) => id !== socket.id)
+            .map(([id]) => id);
 
-        const otherUsers = Object.keys(rooms[salaId].participants).filter(id => id !== socket.id);
-        socket.emit('all-users', otherUsers);
+        socket.emit('all-users', otherParticipants);
 
-        io.to(salaId).emit('update-participant-list', rooms[salaId].participants);
+        // Notificar a todos los participantes de la sala
+        io.to(salaId).emit('update-participant-list', 
+            Object.fromEntries(room.participants)
+        );
+
+        console.log(`Usuario ${userName} se unió exitosamente a la sala ${salaId}`);
+        console.log(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
     });
 
+    // Manejo de señalización WebRTC
     socket.on('sending-signal', payload => {
-        const room = rooms[socket.salaId];
-        console.log(`[signal] sending-signal from ${socket.id} to ${payload.userToSignal} in room ${socket.salaId}`);
+        const room = rooms.get(socket.salaId);
         if (!room) {
-            console.error(`[signal] ERROR: User ${socket.id} tried to send signal but is not in a valid room.`);
+            console.error(`Error: Usuario ${socket.id} intentó enviar señal pero no está en una sala válida`);
             return;
         }
-        
-        io.to(payload.userToSignal).emit('user-offering', { 
-            signal: payload.signal, 
+
+        const participant = room.participants.get(socket.id);
+        console.log(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
+
+        io.to(payload.userToSignal).emit('user-offering', {
+            signal: payload.signal,
             callerId: payload.callerId,
-            callerInfo: room.participants[payload.callerId]
+            callerInfo: room.participants.get(payload.callerId)
         });
     });
 
     socket.on('returning-signal', payload => {
-        console.log(`[signal] returning-signal from ${socket.id} to ${payload.callerId}`);
-        io.to(payload.callerId).emit('receiving-returned-signal', { signal: payload.signal, id: socket.id });
+        const room = rooms.get(socket.salaId);
+        if (!room) {
+            console.error(`Error: Usuario ${socket.id} intentó devolver señal pero no está en una sala válida`);
+            return;
+        }
+
+        const participant = room.participants.get(socket.id);
+        console.log(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
+
+        io.to(payload.callerId).emit('receiving-returned-signal', {
+            signal: payload.signal,
+            id: socket.id
+        });
     });
 
-    socket.on('disconnect', () => {
-        const userName = rooms[socket.salaId]?.participants[socket.id]?.userName || socket.id;
-        console.log(`Usuario desconectado: ${userName} (${userId})`);
-        const salaId = socket.salaId;
-        if (salaId && rooms[salaId]) {
-            delete rooms[salaId].participants[socket.id];
-            if (Object.keys(rooms[salaId].participants).length === 0) {
-                console.log(`Sala vacía '${salaId}', eliminando.`);
-                delete rooms[salaId];
-            } else {
-                io.to(salaId).emit('user-left', socket.id);
-                io.to(salaId).emit('update-participant-list', rooms[salaId].participants);
-            }
-        }
-    });
-    
-    // --- Handlers específicos de la sala ---
-    socket.on('send-chat-message', (messageData) => {
-        const salaId = socket.salaId;
-        if (!salaId) return;
-        console.log(`[chat] Mensaje de ${socket.id} en sala ${salaId}:`, messageData);
-        
-        // Enviar mensaje a todos los demás en la sala
-        socket.to(salaId).emit('chat-message', { 
-            senderId: socket.id, 
-            userName: messageData.sender || userName, 
-            message: messageData.text,
+    // Chat en tiempo real
+    socket.on('send-chat-message', message => {
+        const room = rooms.get(socket.salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        const messageData = {
+            id: Date.now(),
+            text: message.text,
+            sender: participant.userName,
+            senderId: socket.id,
             timestamp: new Date().toISOString()
-        });
-    });
-    
-    socket.on('raise-hand', (raised) => {
-        const room = rooms[socket.salaId];
-        if (room && room.participants[socket.id]) {
-            room.participants[socket.id].raisedHand = raised;
-            io.to(socket.salaId).emit('update-participant-list', room.participants);
-            io.to(socket.salaId).emit('hand-raised', { userId: socket.id, userName, raised });
-        }
-    });
-
-    // Solicitar lista de participantes
-    socket.on('request-participant-list', () => {
-        const salaId = socket.salaId;
-        if (salaId && rooms[salaId]) {
-            socket.emit('update-participant-list', rooms[salaId].participants);
-        }
-    });
-    
-    // Obtener nombre de usuario por socket ID
-    socket.on('get-user-name', (socketId, callback) => {
-        const salaId = socket.salaId;
-        if (salaId && rooms[salaId] && rooms[salaId].participants[socketId]) {
-            const userName = rooms[salaId].participants[socketId].userName;
-            callback(userName);
-        } else {
-            callback(null);
-        }
-    });
-    
-    // Actualizar nombre de usuario
-    socket.on('update-user-name', (data) => {
-        const salaId = socket.salaId;
-        if (salaId && rooms[salaId] && rooms[salaId].participants[socket.id]) {
-            rooms[salaId].participants[socket.id].userName = data.userName;
-            io.to(salaId).emit('update-participant-list', rooms[salaId].participants);
-        }
-    });
-
-    // --- Funciones de moderación ---
-    
-    // Silenciar a un participante
-    socket.on('mute-participant', ({ participantId }) => {
-        const salaId = socket.salaId;
-        const room = rooms[salaId];
-        
-        // Verificar que el usuario es instructor o administrador
-        if (!room || room.participants[socket.id]?.userType !== 'instructor') {
-            console.log(`[moderación] Usuario ${socket.id} intentó silenciar pero no tiene permisos`);
-            return;
-        }
-        
-        console.log(`[moderación] Instructor ${socket.id} silenció a ${participantId}`);
-        
-        // Enviar mensaje al usuario silenciado
-        io.to(participantId).emit('muted-by-moderator');
-        
-        // Notificar a todos los participantes
-        const mutedUserName = room.participants[participantId]?.userName || 'Usuario';
-        const moderatorName = room.participants[socket.id]?.userName || 'Instructor';
-        
-        io.to(salaId).emit('chat-message', {
-            senderId: 'system',
-            userName: 'Sistema',
-            message: `${moderatorName} ha silenciado a ${mutedUserName}`,
-            timestamp: new Date().toISOString()
-        });
-    });
-    
-    // Desactivar video de un participante
-    socket.on('disable-participant-video', ({ participantId }) => {
-        const salaId = socket.salaId;
-        const room = rooms[salaId];
-        
-        // Verificar que el usuario es instructor o administrador
-        if (!room || room.participants[socket.id]?.userType !== 'instructor') {
-            console.log(`[moderación] Usuario ${socket.id} intentó desactivar video pero no tiene permisos`);
-            return;
-        }
-        
-        console.log(`[moderación] Instructor ${socket.id} desactivó video de ${participantId}`);
-        
-        // Enviar mensaje al usuario
-        io.to(participantId).emit('video-disabled-by-moderator');
-        
-        // Notificar a todos los participantes
-        const userName = room.participants[participantId]?.userName || 'Usuario';
-        const moderatorName = room.participants[socket.id]?.userName || 'Instructor';
-        
-        io.to(salaId).emit('chat-message', {
-            senderId: 'system',
-            userName: 'Sistema',
-            message: `${moderatorName} ha desactivado el video de ${userName}`,
-            timestamp: new Date().toISOString()
-        });
-    });
-    
-    // Expulsar a un participante
-    socket.on('kick-participant', ({ participantId }) => {
-        const salaId = socket.salaId;
-        const room = rooms[salaId];
-        
-        // Verificar que el usuario es instructor o administrador
-        if (!room || room.participants[socket.id]?.userType !== 'instructor') {
-            console.log(`[moderación] Usuario ${socket.id} intentó expulsar pero no tiene permisos`);
-            return;
-        }
-        
-        console.log(`[moderación] Instructor ${socket.id} expulsó a ${participantId}`);
-        
-        // Notificar a todos los participantes
-        const userName = room.participants[participantId]?.userName || 'Usuario';
-        const moderatorName = room.participants[socket.id]?.userName || 'Instructor';
-        
-        io.to(salaId).emit('chat-message', {
-            senderId: 'system',
-            userName: 'Sistema',
-            message: `${moderatorName} ha expulsado a ${userName} de la sala`,
-            timestamp: new Date().toISOString()
-        });
-        
-        // Enviar mensaje de expulsión al usuario
-        io.to(participantId).emit('kicked-by-moderator');
-        
-        // Eliminar al usuario de la sala
-        delete room.participants[participantId];
-        io.to(salaId).emit('user-left', participantId);
-        io.to(salaId).emit('update-participant-list', room.participants);
-    });
-
-    socket.on('send-reaction', ({ emoji }) => {
-        const salaId = socket.salaId;
-        if (!salaId) return;
-        socket.to(salaId).emit('show-reaction', { socketId: socket.id, emoji });
-    });
-
-    // --- Encuestas ---
-    socket.on('create-poll', ({ question, options, duration }) => {
-        const room = rooms[socket.salaId];
-        if (room && room.participants[socket.id]?.userType === 'instructor') {
-            const endTime = duration > 0 ? Date.now() + duration * 60 * 1000 : null;
-            room.poll = {
-                question,
-                options,
-                results: new Array(options.length).fill(0),
-                votes: {},
-                endTime,
-            };
-            console.log(`Encuesta creada en sala ${socket.salaId}: "${question}"`);
-            io.to(socket.salaId).emit('poll-created', room.poll);
-
-            io.to(socket.salaId).emit('chat-message', {
-                senderId: 'system',
-                userName: 'Sistema',
-                message: `📊 ¡Nueva encuesta del instructor! "${question}". ¡Vota ahora!`
-            });
-            
-            // Configurar temporizador para finalizar la encuesta
-            if (endTime) {
-                setTimeout(() => {
-                    if (rooms[socket.salaId] && rooms[socket.salaId].poll) {
-                        io.to(socket.salaId).emit('poll-ended');
-                        console.log(`Encuesta finalizada en sala ${socket.salaId}`);
-                        
-                        // Notificar en el chat
-                        io.to(socket.salaId).emit('chat-message', {
-                            senderId: 'system',
-                            userName: 'Sistema',
-                            message: `📊 La encuesta "${question}" ha finalizado.`
-                        });
-                    }
-                }, duration * 60 * 1000);
-            }
-        }
-    });
-    
-    socket.on('vote-poll', ({ optionIndex }) => {
-        const room = rooms[socket.salaId];
-        if (!room || !room.poll) return;
-        
-        // Si el usuario ya votó, anular su voto anterior
-        const previousVote = room.poll.votes[socket.id];
-        if (previousVote !== undefined) {
-            room.poll.results[previousVote]--;
-        }
-        
-        // Registrar nuevo voto
-        room.poll.votes[socket.id] = optionIndex;
-        room.poll.results[optionIndex]++;
-        
-        // Actualizar resultados a todos los participantes
-        io.to(socket.salaId).emit('poll-updated', room.poll);
-    });
-    
-    socket.on('close-poll', () => {
-        const room = rooms[socket.salaId];
-        if (room && room.participants[socket.id]?.userType === 'instructor' && room.poll) {
-            io.to(socket.salaId).emit('poll-ended');
-            console.log(`Encuesta cerrada manualmente en sala ${socket.salaId}`);
-            
-            // Notificar en el chat
-            io.to(socket.salaId).emit('chat-message', {
-                senderId: 'system',
-                userName: 'Sistema',
-                message: `📊 La encuesta "${room.poll.question}" ha sido cerrada por el instructor.`
-            });
-        }
-    });
-
-    // --- Moderación y otros ---
-    socket.on('spotlight-user', ({ spotlightedSocketId }) => {
-         const room = rooms[socket.salaId];
-         if (room && room.participants[socket.id]?.userType === 'instructor') {
-            room.spotlightedSocketId = spotlightedSocketId;
-            io.to(socket.salaId).emit('spotlight-update', { spotlightedSocketId });
-         }
-    });
-
-    // --- Subtítulos y reconocimiento de voz ---
-    socket.on('broadcast-subtitle', (data) => {
-        const salaId = socket.salaId;
-        if (!salaId) return;
-        
-        const userName = rooms[salaId]?.participants[socket.id]?.userName || 'Usuario';
-        
-        // Enviar a todos menos al emisor
-        socket.to(salaId).emit('subtitle-broadcast', {
-            text: data.text,
-            userName: userName
-        });
-    });
-
-    // --- Detección de voz y actividad ---
-    socket.on('voice-activity', (speaking) => {
-        const salaId = socket.salaId;
-        if (!salaId) return;
-        
-        // Enviar a todos menos al emisor
-        socket.to(salaId).emit('user-speaking', {
-            userId: socket.id,
-            speaking: speaking
-        });
-    });
-
-    // --- Cambio de estado de video ---
-    socket.on('video-state-changed', (data) => {
-        const salaId = socket.salaId;
-        if (!salaId) return;
-        
-        // Guardar el estado en los datos del participante
-        if (rooms[salaId] && rooms[salaId].participants[socket.id]) {
-            rooms[salaId].participants[socket.id].videoEnabled = data.enabled;
-        }
-        
-        // Notificar a los demás participantes
-        socket.to(salaId).emit('remote-video-state-changed', {
-            userId: socket.id,
-            enabled: data.enabled
-        });
-    });
-
-    // --- Obtener información de perfil de usuario ---
-    socket.on('get-user-profile', (userId, callback) => {
-        const salaId = socket.salaId;
-        if (!salaId || !rooms[salaId]) {
-            callback(null);
-            return;
-        }
-        
-        // En un sistema real, aquí consultarías a la base de datos
-        // Para esta implementación, devolvemos datos de ejemplo o simulados
-        const participant = rooms[salaId].participants[userId];
-        if (!participant) {
-            callback(null);
-            return;
-        }
-        
-        // Simulamos un objeto con la URL de la foto de perfil
-        // En una implementación real, esto debería consultar la base de datos
-        const profileData = {
-            userId: participant.userId,
-            userName: participant.userName,
-            profileUrl: `../uploads/profiles/profile_${participant.userId}.jpg` // URL simulada
         };
-        
-        callback(profileData);
+
+        room.messages.push(messageData);
+        io.to(socket.salaId).emit('chat-message', messageData);
+    });
+
+    // Control de audio/video
+    socket.on('toggle-audio', (isEnabled) => {
+        const room = rooms.get(socket.salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        if (participant) {
+            participant.isAudioEnabled = isEnabled;
+            io.to(socket.salaId).emit('participant-audio-changed', {
+                participantId: socket.id,
+                isEnabled
+            });
+        }
+    });
+
+    socket.on('toggle-video', (isEnabled) => {
+        const room = rooms.get(socket.salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        if (participant) {
+            participant.isVideoEnabled = isEnabled;
+            io.to(socket.salaId).emit('participant-video-changed', {
+                participantId: socket.id,
+                isEnabled
+            });
+        }
+    });
+
+    // Levantar la mano
+    socket.on('raise-hand', (isRaised) => {
+        const room = rooms.get(socket.salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        if (participant) {
+            participant.raisedHand = isRaised;
+            io.to(socket.salaId).emit('hand-raised', {
+                participantId: socket.id,
+                userName: participant.userName,
+                isRaised
+            });
+        }
+    });
+
+    // Manejo de desconexión
+    socket.on('disconnect', () => {
+        const salaId = socket.salaId;
+        if (!salaId) return;
+
+        const room = rooms.get(salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        if (participant) {
+            console.log(`Usuario ${participant.userName} se desconectó de la sala ${salaId}`);
+            room.participants.delete(socket.id);
+
+            // Notificar a otros participantes
+            io.to(salaId).emit('user-left', socket.id);
+            io.to(salaId).emit('update-participant-list', 
+                Object.fromEntries(room.participants)
+            );
+
+            // Eliminar la sala si está vacía
+            if (room.participants.size === 0) {
+                console.log(`Sala ${salaId} cerrada por falta de participantes`);
+                rooms.delete(salaId);
+            }
+        }
     });
 });
 
-server.listen(PORT, () => console.log(`Servidor de señalización corriendo en el puerto ${PORT}`)); 
+// Iniciar el servidor
+server.listen(PORT, () => {
+    console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
+}); 
