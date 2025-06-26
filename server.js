@@ -15,21 +15,16 @@ const PORT = process.env.PORT || 3000;
 
 const rooms = {};
 
-io.on('connection', (socket) => {
-    const { userId, userName, userType } = socket.handshake.query;
-    console.log(`Usuario conectado: ${userName} (${userId}), Socket ID: ${socket.id}`);
+io.on("connection", (socket) => {
+  const { userId, userName, userType } = socket.handshake.query;
 
-    socket.on('join-room', (data) => {
-        const { salaId, userId, userName, userType } = data;
-        if (!salaId) return;
+  console.log(`🟢 ${userName} (${userType}) se conectó con ID: ${socket.id}`);
 
-        if (!rooms[salaId]) {
-            rooms[salaId] = {
-                participants: {},
-                poll: null,
-                spotlightedSocketId: null
-            };
-        }
+  socket.on("disconnect", () => {
+    console.log(`🔴 ${userName} (${userType}) se desconectó`);
+  });
+});
+
         
         // Guardar la sala en el socket para referencia futura
         socket.salaId = salaId;
