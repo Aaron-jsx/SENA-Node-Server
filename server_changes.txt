@@ -1,0 +1,62 @@
+Agregar antes de socket.on(" disconnect\, () => {... el siguiente código:
+
+// Agregar eventos para compartir pantalla
+socket.on(\screen-sharing-started\, () => {
+ const room = rooms.get(socket.salaId);
+ if (!room) return;
+
+ const participant = room.participants.get(socket.id);
+ if (participant) {
+ participant.isScreenSharing = true;
+ io.to(socket.salaId).emit(\participant-screen-sharing\, {
+ participantId: socket.id,
+ userId: participant.userId,
+ userName: participant.userName,
+ isSharing: true
+ });
+ console.log(Usuario comenzó a compartir pantalla en la sala );
+ }
+});
+
+socket.on(\screen-sharing-stopped\, () => {
+ const room = rooms.get(socket.salaId);
+ if (!room) return;
+
+ const participant = room.participants.get(socket.id);
+ if (participant) {
+ participant.isScreenSharing = false;
+ io.to(socket.salaId).emit(\participant-screen-sharing\, {
+ participantId: socket.id,
+ userId: participant.userId,
+ userName: participant.userName,
+ isSharing: false
+ });
+ console.log(Usuario dejó de compartir pantalla en la sala );
+ }
+});
+
+// Mejorar el manejo de mensajes de chat en la función send-chat-message:
+// Busca socket.on(\send-chat-message\, message => { y reemplaza todo el bloque por:
+
+socket.on(\send-chat-message\, message => {
+ const room = rooms.get(socket.salaId);
+ if (!room) return;
+
+ const participant = room.participants.get(socket.id);
+ if (!participant) return;
+
+ const messageData = {
+ id: Date.now(),
+ text: message.text,
+ sender: participant.userName,
+ senderId: socket.id,
+ userId: participant.userId,
+ timestamp: new Date().toISOString()
+ };
+ 
+ room.messages.push(messageData);
+ console.log(Mensaje de chat de en sala : );
+ 
+ // Enviar a todos los participantes de la sala
+ io.to(socket.salaId).emit(\chat-message\, messageData);
+});
