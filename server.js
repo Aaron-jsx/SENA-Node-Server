@@ -7,11 +7,20 @@ const server = http.createServer(app);
 const io = new socketIo.Server(server, {
     cors: {
         origin: "*",
-        methods: ["GET", "POST"]
-    }
+        methods: ["GET", "POST"],
+        credentials: true
+    },
+    transports: ['websocket'],
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 
 const PORT = process.env.PORT || 10000;
+
+server.listen(PORT, () => {
+    console.log(`Servidor de señalización iniciado en el puerto ${PORT}`);
+    console.log(`URL del servidor: http://localhost:${PORT}`);
+});
 
 // Almacena información de las salas activas
 const rooms = new Map();
@@ -84,11 +93,11 @@ io.on("connection", (socket) => {
             console.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
-
+        
         console.log(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
 
         io.to(payload.userToSignal).emit('user-joined-with-signal', {
-            signal: payload.signal,
+            signal: payload.signal, 
             callerId: socket.id,
             callerInfo: {
                 userId: participant.userId,
@@ -104,13 +113,13 @@ io.on("connection", (socket) => {
             console.error(`Error: Usuario ${socket.id} intentó devolver señal pero no está en una sala válida`);
             return;
         }
-
+        
         const participant = room.participants.get(socket.id);
         if (!participant) {
             console.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
-
+        
         console.log(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
 
         io.to(payload.callerId).emit('receiving-returned-signal', {
@@ -123,22 +132,28 @@ io.on("connection", (socket) => {
             }
         });
     });
-
+    
     // Chat en tiempo real
     socket.on('send-chat-message', message => {
         const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
+        if (!participant) return;
+
         const messageData = {
             id: Date.now(),
             text: message.text,
             sender: participant.userName,
             senderId: socket.id,
+            userId: participant.userId,
             timestamp: new Date().toISOString()
         };
-
+        
         room.messages.push(messageData);
+        console.log(`Mensaje de chat de ${participant.userName} en sala ${socket.salaId}: ${message.text}`);
+        
+        // Enviar a todos los participantes de la sala
         io.to(socket.salaId).emit('chat-message', messageData);
     });
 
@@ -156,11 +171,11 @@ io.on("connection", (socket) => {
             });
         }
     });
-
+    
     socket.on('toggle-video', (isEnabled) => {
         const room = rooms.get(socket.salaId);
         if (!room) return;
-
+        
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isVideoEnabled = isEnabled;
@@ -170,7 +185,7 @@ io.on("connection", (socket) => {
             });
         }
     });
-
+    
     // Levantar la mano
     socket.on('raise-hand', (isRaised) => {
         const room = rooms.get(socket.salaId);
@@ -187,11 +202,46 @@ io.on("connection", (socket) => {
         }
     });
 
+    // Agregar eventos para compartir pantalla
+    socket.on('screen-sharing-started', () => {
+        const room = rooms.get(socket.salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        if (participant) {
+            participant.isScreenSharing = true;
+            io.to(socket.salaId).emit('participant-screen-sharing', {
+                participantId: socket.id,
+                userId: participant.userId,
+                userName: participant.userName,
+                isSharing: true
+            });
+            console.log(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.salaId}`);
+        }
+    });
+
+    socket.on('screen-sharing-stopped', () => {
+        const room = rooms.get(socket.salaId);
+        if (!room) return;
+
+        const participant = room.participants.get(socket.id);
+        if (participant) {
+            participant.isScreenSharing = false;
+            io.to(socket.salaId).emit('participant-screen-sharing', {
+                participantId: socket.id,
+                userId: participant.userId,
+                userName: participant.userName,
+                isSharing: false
+            });
+            console.log(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.salaId}`);
+        }
+    });
+
     // Manejo de desconexión
     socket.on('disconnect', () => {
         const salaId = socket.salaId;
         if (!salaId) return;
-
+        
         const room = rooms.get(salaId);
         if (!room) return;
 
