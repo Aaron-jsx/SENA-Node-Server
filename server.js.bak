@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, () => {
     console.log(`Servidor de señalización iniciado en el puerto ${PORT}`);
-    console.log(`URL del servidor: https://sena-node-server.onrender.com:${PORT}`);
+    console.log(`URL del servidor: http://localhost:${PORT}`);
 });
 
 // Almacena información de las salas activas
