@@ -18,11 +18,6 @@ const io = new socketIo.Server(server, {
 
 const PORT = process.env.PORT || 10000;
 
-server.listen(PORT, () => {
-    console.log(`Servidor de señalización iniciado en el puerto ${PORT}`);
-    console.log(`URL del servidor: http://localhost:${PORT}`);
-});
-
 // Dentro de la definición de rooms, agregar polls para almacenar encuestas
 const rooms = new Map();
 
@@ -526,7 +521,7 @@ io.on("connection", (socket) => {
     });
 });
 
-// Configuración del namespace de tiempo real
+// Eventos para el namespace de tiempo real
 realTimeNamespace.on('connection', (socket) => {
     const { userId, userName, userType, salaId } = socket.handshake.query;
 
@@ -596,4 +591,4 @@ realTimeNamespace.on('connection', (socket) => {
 // Iniciar el servidor
 server.listen(PORT, () => {
     console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
-}); 
+});
