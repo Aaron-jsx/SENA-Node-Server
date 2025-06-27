@@ -41,19 +41,33 @@ io.on("connection", (socket) => {
                 participants: new Map(),
                 createdAt: new Date(),
                 messages: [],
-                polls: [], // Agregar array para almacenar encuestas
-                notifications: [] // Agregar array para almacenar notificaciones
+                polls: [],
+                notifications: []
             });
         }
 
         const room = rooms.get(salaId);
         
-        // Verificar si ya hay dos usuarios diferentes en la sala
+        // Verificar si ya hay usuarios en la sala
         const existingParticipants = Array.from(room.participants.values());
-        const hasDifferentUsers = existingParticipants.some(p => p.userId !== userId);
+        
+        // Verificación más estricta de usuarios diferentes
+        const isDifferentUser = existingParticipants.length === 0 || 
+            existingParticipants.every(p => 
+                p.userId !== userId && 
+                p.userName !== userName
+            );
 
-        // Si ya hay dos usuarios diferentes, no permitir más conexiones
-        if (hasDifferentUsers && existingParticipants.length >= 2) {
+        // Si no son usuarios diferentes, no permitir la conexión
+        if (!isDifferentUser) {
+            socket.emit('room-error', { 
+                message: 'No puedes unirte a la misma sala dos veces o con un usuario repetido' 
+            });
+            return;
+        }
+
+        // Limitar a máximo 2 participantes
+        if (existingParticipants.length >= 2) {
             socket.emit('room-full', { message: 'La sala ya está llena' });
             return;
         }
