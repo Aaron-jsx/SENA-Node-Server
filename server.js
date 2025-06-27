@@ -33,7 +33,12 @@ io.on("connection", (socket) => {
 
     // Unirse a una sala
     socket.on("join-room", ({ salaId, userId, userName, userType }) => {
-        console.log(`Usuario ${userName} (${userType}) está uniéndose a la sala ${salaId}`);
+        console.log(`[DEBUG] Intento de unión a sala:
+- Socket ID: ${socket.id}
+- Sala ID: ${salaId}
+- User ID: ${userId}
+- User Name: ${userName}
+- User Type: ${userType}`);
 
         // Crear la sala si no existe
         if (!rooms.has(salaId)) {
@@ -51,6 +56,14 @@ io.on("connection", (socket) => {
         // Verificar si ya hay usuarios en la sala
         const existingParticipants = Array.from(room.participants.values());
         
+        console.log(`[DEBUG] Participantes existentes en la sala:`, 
+            existingParticipants.map(p => ({
+                userId: p.userId, 
+                userName: p.userName, 
+                userType: p.userType
+            }))
+        );
+
         // Verificación más estricta de usuarios diferentes
         const isDifferentUser = existingParticipants.length === 0 || 
             existingParticipants.every(p => 
@@ -60,6 +73,7 @@ io.on("connection", (socket) => {
 
         // Si no son usuarios diferentes, no permitir la conexión
         if (!isDifferentUser) {
+            console.log(`[DEBUG] Conexión rechazada: Usuario repetido`);
             socket.emit('room-error', { 
                 message: 'No puedes unirte a la misma sala dos veces o con un usuario repetido' 
             });
@@ -68,6 +82,7 @@ io.on("connection", (socket) => {
 
         // Limitar a máximo 2 participantes
         if (existingParticipants.length >= 2) {
+            console.log(`[DEBUG] Conexión rechazada: Sala llena`);
             socket.emit('room-full', { message: 'La sala ya está llena' });
             return;
         }
@@ -86,6 +101,13 @@ io.on("connection", (socket) => {
         // Unir el socket a la sala
         socket.join(salaId);
         socket.salaId = salaId;
+
+        console.log(`[DEBUG] Usuario unido exitosamente:
+- Socket ID: ${socket.id}
+- Sala ID: ${salaId}
+- User ID: ${userId}
+- User Name: ${userName}
+- User Type: ${userType}`);
 
         // Enviar lista de participantes existentes al nuevo usuario
         const participantsInfo = Array.from(room.participants.entries())
@@ -114,7 +136,6 @@ io.on("connection", (socket) => {
             pendingNotifications.delete(userId);
         }
 
-        console.log(`Usuario ${userName} se unió exitosamente a la sala ${salaId}`);
         console.log(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
     });
 
