@@ -176,6 +176,15 @@ io.on("connection", (socket) => {
         }
 
         logger.info(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
+
+        // Emitir evento de confirmación al cliente que se unió
+        socket.emit('room-joined', {
+            salaId,
+            userId,
+            userName,
+            userType,
+            participants: Array.from(room.participants.values())
+        });
     });
 
     // Manejo de señalización WebRTC
