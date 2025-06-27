@@ -534,53 +534,61 @@ server.listen(PORT, () => {
 realTimeNamespace.on('connection', (socket) => {
     const { userId, userName, userType, salaId } = socket.handshake.query;
 
-    logger.info('Nueva conexión de socket de tiempo real', { 
+    logger.info('Nueva conexión en namespace de tiempo real', { 
         socketId: socket.id, 
         userId, 
         userName, 
-        userType,
-        salaId
+        userType, 
+        salaId 
     });
 
-    // Unir al usuario a una sala específica
+    // Unirse a la sala de tiempo real
     socket.join(salaId);
 
     // Manejar eventos de tiempo real
-    socket.on('real-time-update', (data) => {
-        logger.debug('Actualización en tiempo real recibida', { 
+    socket.on('join-room', ({ salaId, userId, userName, userType }) => {
+        logger.debug('Unión a sala de tiempo real', { 
             socketId: socket.id, 
-            data 
-        });
-
-        // Transmitir a todos en la sala excepto al remitente
-        socket.to(salaId).emit('real-time-update', data);
-    });
-
-    // Eventos específicos de actualización
-    socket.on('attendance-update', (attendanceData) => {
-        logger.info('Actualización de asistencia', { 
-            socketId: socket.id, 
-            attendanceData 
-        });
-
-        socket.to(salaId).emit('attendance-update', attendanceData);
-    });
-
-    socket.on('announcement-update', (announcementData) => {
-        logger.info('Actualización de anuncio', { 
-            socketId: socket.id, 
-            announcementData 
-        });
-
-        socket.to(salaId).emit('announcement-update', announcementData);
-    });
-
-    // Manejo de desconexión
-    socket.on('disconnect', () => {
-        logger.info('Socket de tiempo real desconectado', { 
-            socketId: socket.id, 
+            salaId, 
             userId, 
-            userName 
+            userName, 
+            userType 
+        });
+
+        // Verificar si la sala existe
+        if (!rooms.has(salaId)) {
+            logger.warn(`Sala de tiempo real no encontrada: ${salaId}`);
+            socket.emit('room-error', { 
+                message: 'Sala no encontrada' 
+            });
+            return;
+        }
+
+        // Emitir eventos de actualización
+        socket.on('request-attendance-update', () => {
+            logger.info(`Solicitando actualización de asistencia para sala ${salaId}`);
+            realTimeNamespace.to(salaId).emit('attendance-update', {
+                userId,
+                userName,
+                status: 'presente', // Lógica de asistencia aquí
+                timestamp: new Date()
+            });
+        });
+
+        socket.on('send-announcement', (announcementData) => {
+            logger.info(`Nuevo anuncio en sala ${salaId}`, announcementData);
+            realTimeNamespace.to(salaId).emit('announcement-update', {
+                ...announcementData,
+                sender: { userId, userName },
+                timestamp: new Date()
+            });
+        });
+    });
+
+    // Manejar desconexión
+    socket.on('disconnect', () => {
+        logger.info('Desconexión en namespace de tiempo real', { 
+            socketId: socket.id 
         });
     });
 }); 
