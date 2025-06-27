@@ -115,17 +115,19 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Verificar usuarios duplicados
+        // Verificar solo si es exactamente el mismo usuario con el mismo rol
+        // Esto permite que un instructor y un aprendiz con el mismo ID puedan unirse
         const isDuplicateUser = Array.from(room.participants.values()).some(
             participant => 
                 participant.userId === userId && 
-                participant.userName === userName
+                participant.userName === userName &&
+                participant.userRole === userRole
         );
 
         if (isDuplicateUser) {
             logger.warn(`Intento de unión con usuario duplicado en sala ${roomId}`);
             socket.emit('room-error', { 
-                message: 'No puedes unirte a la misma sala dos veces' 
+                message: 'Ya estás en esta sala con este rol' 
             });
             return;
         }
@@ -664,6 +666,27 @@ app.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'OK', 
         message: 'Servidor de tiempo real funcionando correctamente' 
+    });
+});
+
+// Ruta simple para verificar que el servidor está funcionando
+app.get('/', (req, res) => {
+    res.send({
+        status: 'ok',
+        message: 'Servidor de señalización SENA funcionando correctamente',
+        version: '1.0.0',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Ruta para verificar estado
+app.get('/status', (req, res) => {
+    res.send({
+        status: 'ok',
+        rooms: Array.from(rooms.keys()),
+        connections: io.engine.clientsCount,
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString()
     });
 });
 
