@@ -83,32 +83,32 @@ io.on("connection", (socket) => {
     });
 
     // Unirse a una sala
-    socket.on("join-room", ({ salaId, userId, userName, userType }) => {
+    socket.on("join-room", ({ roomId, userId, userName, userType }) => {
         logger.debug('Intento de unión a sala', { 
             socketId: socket.id, 
-            salaId, 
+            roomId, 
             userId, 
             userName, 
             userType 
         });
 
         // Crear la sala si no existe
-        if (!rooms.has(salaId)) {
-            rooms.set(salaId, {
+        if (!rooms.has(roomId)) {
+            rooms.set(roomId, {
                 participants: new Map(),
                 createdAt: new Date(),
                 messages: [],
                 polls: [],
                 notifications: []
             });
-            logger.info(`Sala ${salaId} creada`);
+            logger.info(`Sala ${roomId} creada`);
         }
 
-        const room = rooms.get(salaId);
+        const room = rooms.get(roomId);
         
         // Verificar límite de participantes
         if (room.participants.size >= 2) {
-            logger.warn(`Sala ${salaId} llena. No se permiten más participantes.`);
+            logger.warn(`Sala ${roomId} llena. No se permiten más participantes.`);
             socket.emit('room-full', { 
                 message: 'La sala ya tiene el máximo de participantes permitidos' 
             });
@@ -123,7 +123,7 @@ io.on("connection", (socket) => {
         );
 
         if (isDuplicateUser) {
-            logger.warn(`Intento de unión con usuario duplicado en sala ${salaId}`);
+            logger.warn(`Intento de unión con usuario duplicado en sala ${roomId}`);
             socket.emit('room-error', { 
                 message: 'No puedes unirte a la misma sala dos veces' 
             });
@@ -140,109 +140,135 @@ io.on("connection", (socket) => {
         });
 
         // Unir socket a la sala
-        socket.join(salaId);
-        socket.salaId = salaId;
+        socket.join(roomId);
+        socket.roomId = roomId;
 
-        logger.info(`Usuario unido a sala ${salaId}`, { 
+        logger.info(`Usuario unido a sala ${roomId}`, { 
             socketId: socket.id, 
             participantCount: room.participants.size 
         });
 
-        // Enviar lista de participantes existentes
-        const existingParticipants = Array.from(room.participants.entries())
-            .filter(([id]) => id !== socket.id)
-            .map(([id, info]) => ({
-                socketId: id,
-                ...info
-            }));
-
-        socket.emit('existing-participants', existingParticipants);
-
-        // Notificar a otros participantes
-        socket.to(salaId).emit('user-joined', {
-            socketId: socket.id,
-            userId,
-            userName,
-            userType
-        });
-
-        // Enviar notificaciones pendientes para este usuario
-        if (pendingNotifications.has(userId)) {
-            const notifications = pendingNotifications.get(userId);
-            notifications.forEach(notification => {
-                socket.emit('notification', notification);
-            });
-            pendingNotifications.delete(userId);
-        }
-
-        logger.info(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
-
-        // Emitir evento de confirmación al cliente que se unió
-        socket.emit('room-joined', {
-            salaId,
+        // Notificar al usuario que se unió exitosamente
+        socket.emit('joined-room', {
+            roomId,
             userId,
             userName,
             userType,
             participants: Array.from(room.participants.values())
         });
+
+        // Notificar a otros participantes
+        socket.to(roomId).emit('user-joined', {
+            userId,
+            userName,
+            userType
+        });
+
+        // Enviar lista de usuarios actuales al nuevo participante
+        socket.emit('room-users', Array.from(room.participants.values())
+            .filter(p => p.userId !== userId)
+            .map(p => ({
+                userId: p.userId,
+                userName: p.userName,
+                userType: p.userType
+            }))
+        );
     });
 
     // Manejo de señalización WebRTC
-    socket.on('sending-signal', payload => {
-        const room = rooms.get(socket.salaId);
+    socket.on('offer', ({ to, offer }) => {
+        const room = rooms.get(socket.roomId);
         if (!room) {
-            logger.error(`Error: Usuario ${socket.id} intentó enviar señal pero no está en una sala válida`);
+            logger.error(`Error: Usuario ${socket.id} intentó enviar oferta pero no está en una sala válida`);
             return;
         }
 
-        const participant = room.participants.get(socket.id);
-        if (!participant) {
+        const fromParticipant = room.participants.get(socket.id);
+        if (!fromParticipant) {
             logger.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
-        
-        logger.info(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
 
-        io.to(payload.userToSignal).emit('user-joined-with-signal', {
-            signal: payload.signal, 
-            callerId: socket.id,
-            callerInfo: {
-                userId: participant.userId,
-                userName: participant.userName,
-                userType: participant.userType
-            }
+        logger.info(`Oferta enviada de ${fromParticipant.userName} a ${to}`);
+
+        // Encontrar el socket ID del destinatario
+        const toParticipant = Array.from(room.participants.entries())
+            .find(([_, p]) => p.userId === to);
+
+        if (!toParticipant) {
+            logger.error(`Error: No se encontró el destinatario ${to}`);
+            return;
+        }
+
+        io.to(toParticipant[0]).emit('offer', {
+            from: fromParticipant.userId,
+            offer
         });
     });
 
-    socket.on('returning-signal', payload => {
-        const room = rooms.get(socket.salaId);
+    socket.on('answer', ({ to, answer }) => {
+        const room = rooms.get(socket.roomId);
         if (!room) {
-            logger.error(`Error: Usuario ${socket.id} intentó devolver señal pero no está en una sala válida`);
+            logger.error(`Error: Usuario ${socket.id} intentó enviar respuesta pero no está en una sala válida`);
             return;
         }
-        
-        const participant = room.participants.get(socket.id);
-        if (!participant) {
+
+        const fromParticipant = room.participants.get(socket.id);
+        if (!fromParticipant) {
             logger.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
-        
-        logger.info(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
 
-        io.to(payload.callerId).emit('receiving-returned-signal', {
-            signal: payload.signal,
-            id: socket.id,
-            userInfo: {
-                userId: participant.userId,
-                userName: participant.userName,
-                userType: participant.userType
-            }
+        logger.info(`Respuesta enviada de ${fromParticipant.userName} a ${to}`);
+
+        // Encontrar el socket ID del destinatario
+        const toParticipant = Array.from(room.participants.entries())
+            .find(([_, p]) => p.userId === to);
+
+        if (!toParticipant) {
+            logger.error(`Error: No se encontró el destinatario ${to}`);
+            return;
+        }
+
+        io.to(toParticipant[0]).emit('answer', {
+            from: fromParticipant.userId,
+            answer
         });
     });
-    
+
+    socket.on('ice-candidate', ({ to, candidate }) => {
+        const room = rooms.get(socket.roomId);
+        if (!room) {
+            logger.error(`Error: Usuario ${socket.id} intentó enviar ICE candidate pero no está en una sala válida`);
+            return;
+        }
+
+        const fromParticipant = room.participants.get(socket.id);
+        if (!fromParticipant) {
+            logger.error(`Error: No se encontró información del participante ${socket.id}`);
+            return;
+        }
+
+        logger.info(`ICE candidate enviado de ${fromParticipant.userName} a ${to}`);
+
+        // Encontrar el socket ID del destinatario
+        const toParticipant = Array.from(room.participants.entries())
+            .find(([_, p]) => p.userId === to);
+
+        if (!toParticipant) {
+            logger.error(`Error: No se encontró el destinatario ${to}`);
+            return;
+        }
+
+        io.to(toParticipant[0]).emit('ice-candidate', {
+            from: fromParticipant.userId,
+            candidate
+        });
+    });
+
     // Chat en tiempo real
     socket.on('send-chat-message', message => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -258,21 +284,21 @@ io.on("connection", (socket) => {
         };
         
         room.messages.push(messageData);
-        logger.info(`Mensaje de chat de ${participant.userName} en sala ${socket.salaId}: ${message.text}`);
+        logger.info(`Mensaje de chat de ${participant.userName} en sala ${socket.roomId}: ${message.text}`);
         
         // Enviar a todos los participantes de la sala
-        io.to(socket.salaId).emit('chat-message', messageData);
+        io.to(socket.roomId).emit('chat-message', messageData);
     });
 
     // Control de audio/video
     socket.on('toggle-audio', (isEnabled) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isAudioEnabled = isEnabled;
-            io.to(socket.salaId).emit('participant-audio-changed', {
+            io.to(socket.roomId).emit('participant-audio-changed', {
                 participantId: socket.id,
                 isEnabled
             });
@@ -280,13 +306,13 @@ io.on("connection", (socket) => {
     });
     
     socket.on('toggle-video', (isEnabled) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
         
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isVideoEnabled = isEnabled;
-            io.to(socket.salaId).emit('participant-video-changed', {
+            io.to(socket.roomId).emit('participant-video-changed', {
                 participantId: socket.id,
                 isEnabled
             });
@@ -295,13 +321,13 @@ io.on("connection", (socket) => {
     
     // Levantar la mano
     socket.on('raise-hand', (isRaised) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.raisedHand = isRaised;
-            io.to(socket.salaId).emit('hand-raised', {
+            io.to(socket.roomId).emit('hand-raised', {
                 participantId: socket.id,
                 userName: participant.userName,
                 isRaised
@@ -311,42 +337,42 @@ io.on("connection", (socket) => {
 
     // Agregar eventos para compartir pantalla
     socket.on('screen-sharing-started', () => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isScreenSharing = true;
-            io.to(socket.salaId).emit('participant-screen-sharing', {
+            io.to(socket.roomId).emit('participant-screen-sharing', {
                 participantId: socket.id,
                 userId: participant.userId,
                 userName: participant.userName,
                 isSharing: true
             });
-            logger.info(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.salaId}`);
+            logger.info(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.roomId}`);
         }
     });
 
     socket.on('screen-sharing-stopped', () => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isScreenSharing = false;
-            io.to(socket.salaId).emit('participant-screen-sharing', {
+            io.to(socket.roomId).emit('participant-screen-sharing', {
                 participantId: socket.id,
                 userId: participant.userId,
                 userName: participant.userName,
                 isSharing: false
             });
-            logger.info(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.salaId}`);
+            logger.info(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.roomId}`);
         }
     });
 
     // Eventos para manejar encuestas
     socket.on('create-poll', (pollData) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -368,14 +394,14 @@ io.on("connection", (socket) => {
 
         // Guardar la encuesta en la sala
         room.polls.push(poll);
-        logger.info(`Encuesta creada por ${participant.userName} en sala ${socket.salaId}: ${poll.question}`);
+        logger.info(`Encuesta creada por ${participant.userName} en sala ${socket.roomId}: ${poll.question}`);
         
         // Notificar a todos los participantes
-        io.to(socket.salaId).emit('poll-created', poll);
+        io.to(socket.roomId).emit('poll-created', poll);
     });
 
     socket.on('get-active-polls', () => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         // Filtrar encuestas activas
@@ -386,7 +412,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on('vote-poll', ({ pollId, optionIndex }) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -420,11 +446,11 @@ io.on("connection", (socket) => {
         room.polls[pollIndex] = poll;
         
         // Notificar a todos los participantes
-        io.to(socket.salaId).emit('poll-updated', poll);
+        io.to(socket.roomId).emit('poll-updated', poll);
     });
 
     socket.on('close-poll', ({ pollId }) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -446,11 +472,11 @@ io.on("connection", (socket) => {
         logger.info(`Encuesta ${pollId} cerrada por ${participant.userName}`);
         
         // Notificar a todos los participantes
-        io.to(socket.salaId).emit('poll-closed', { pollId });
+        io.to(socket.roomId).emit('poll-closed', { pollId });
     });
 
     socket.on('get-chat-history', () => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         // Enviar los últimos 50 mensajes
@@ -460,7 +486,7 @@ io.on("connection", (socket) => {
 
     // Eventos para notificaciones en tiempo real
     socket.on('send-notification', ({ userId, notification }) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -500,7 +526,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on('broadcast-notification', ({ notification }) => {
-        const room = rooms.get(socket.salaId);
+        const room = rooms.get(socket.roomId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -525,32 +551,33 @@ io.on("connection", (socket) => {
         room.notifications.push(notificationData);
 
         // Enviar a todos los participantes de la sala
-        io.to(socket.salaId).emit('notification', notificationData);
+        io.to(socket.roomId).emit('notification', notificationData);
     });
 
     // Manejo de desconexión
     socket.on('disconnect', () => {
-        const salaId = socket.salaId;
+        logger.info(`Usuario desconectado: ${socket.id}`);
         
-        if (salaId && rooms.has(salaId)) {
-            const room = rooms.get(salaId);
-            room.participants.delete(socket.id);
+        const roomId = socket.roomId;
+        if (!roomId) return;
 
-            logger.info(`Usuario desconectado de sala ${salaId}`, { 
-                socketId: socket.id,
-                participantCount: room.participants.size 
-            });
+        const room = rooms.get(roomId);
+        if (!room) return;
 
-            // Notificar a otros participantes
-            socket.to(salaId).emit('user-left', { 
-                socketId: socket.id 
-            });
+        const participant = room.participants.get(socket.id);
+        if (!participant) return;
 
-            // Limpiar sala si no hay participantes
-            if (room.participants.size === 0) {
-                rooms.delete(salaId);
-                logger.info(`Sala ${salaId} eliminada por falta de participantes`);
-            }
+        // Eliminar participante
+        room.participants.delete(socket.id);
+        logger.info(`Participante eliminado de la sala ${roomId}`);
+
+        // Notificar a otros participantes
+        socket.to(roomId).emit('user-left', participant.userId);
+
+        // Si la sala está vacía, eliminarla
+        if (room.participants.size === 0) {
+            rooms.delete(roomId);
+            logger.info(`Sala ${roomId} eliminada por estar vacía`);
         }
     });
 });
