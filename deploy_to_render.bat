@@ -1,34 +1,16 @@
 @echo off
-echo ========================================
-echo = Despliegue del servidor SENA a Render =
-echo ========================================
-echo.
+echo Iniciando despliegue a Render...
 
-cd /d "%~dp0"
-
-echo Verificando cambios en el repositorio...
-git status
-
-echo.
-echo Añadiendo archivos modificados...
+echo Guardando cambios en Git...
 git add .
-
-echo.
-echo Escribe un mensaje para el commit:
-set /p mensaje=Mensaje: 
-git commit -m "%mensaje%"
-
-echo.
-echo Haciendo push a GitHub...
+git commit -m "Actualizacion: Mejoras en la gestion de roles y funcionalidades de videollamada"
 git push origin main
 
-echo.
-echo ========================================
-echo Los cambios han sido enviados a GitHub.
-echo Render detectará automáticamente estos cambios y desplegará la nueva versión.
-echo.
-echo Puedes verificar el estado del despliegue en:
-echo https://dashboard.render.com/
-echo ========================================
+echo Esperando a que Render detecte los cambios (30 segundos)...
+timeout /t 30
 
+echo Verificando el estado del servidor...
+curl https://sena-node-server.onrender.com/status
+
+echo Despliegue completado. Verifica el estado del servidor en el panel de Render.
 pause 
