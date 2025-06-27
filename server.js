@@ -72,24 +72,24 @@ realTimeNamespace.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
-    const { userId, userName, userType, room } = socket.handshake.query;
+    const { userId, userName, userRole, roomId } = socket.handshake.query;
 
     logger.info('Nueva conexión de socket principal', { 
         socketId: socket.id, 
         userId, 
         userName, 
-        userType, 
-        room 
+        userRole, 
+        roomId 
     });
 
     // Unirse a una sala
-    socket.on("join-room", ({ roomId, userId, userName, userType }) => {
+    socket.on("join-room", ({ roomId, userId, userName, userRole }) => {
         logger.debug('Intento de unión a sala', { 
             socketId: socket.id, 
             roomId, 
             userId, 
             userName, 
-            userType 
+            userRole 
         });
 
         // Crear la sala si no existe
@@ -107,7 +107,7 @@ io.on("connection", (socket) => {
         const room = rooms.get(roomId);
         
         // Verificar límite de participantes
-        if (room.participants.size >= 2) {
+        if (room.participants.size >= 10) {
             logger.warn(`Sala ${roomId} llena. No se permiten más participantes.`);
             socket.emit('room-full', { 
                 message: 'La sala ya tiene el máximo de participantes permitidos' 
@@ -118,7 +118,7 @@ io.on("connection", (socket) => {
         // Verificar usuarios duplicados
         const isDuplicateUser = Array.from(room.participants.values()).some(
             participant => 
-                participant.userId === userId || 
+                participant.userId === userId && 
                 participant.userName === userName
         );
 
@@ -134,7 +134,7 @@ io.on("connection", (socket) => {
         room.participants.set(socket.id, {
             userId,
             userName,
-            userType,
+            userRole,
             joinedAt: new Date(),
             socketId: socket.id
         });
@@ -153,15 +153,15 @@ io.on("connection", (socket) => {
             roomId,
             userId,
             userName,
-            userType,
+            userRole,
             participants: Array.from(room.participants.values())
         });
 
         // Notificar a otros participantes
-        socket.to(roomId).emit('user-joined', {
+        socket.to(roomId).emit('user-connected', {
             userId,
             userName,
-            userType
+            userRole
         });
 
         // Enviar lista de usuarios actuales al nuevo participante
@@ -170,7 +170,7 @@ io.on("connection", (socket) => {
             .map(p => ({
                 userId: p.userId,
                 userName: p.userName,
-                userType: p.userType
+                userRole: p.userRole
             }))
         );
     });
@@ -379,7 +379,7 @@ io.on("connection", (socket) => {
         if (!participant) return;
 
         // Solo los instructores pueden crear encuestas
-        if (participant.userType !== 'instructor') {
+        if (participant.userRole !== 'instructor') {
             logger.warn(`Usuario ${participant.userName} intentó crear una encuesta sin ser instructor`);
             return;
         }
@@ -457,7 +457,7 @@ io.on("connection", (socket) => {
         if (!participant) return;
 
         // Solo los instructores pueden cerrar encuestas
-        if (participant.userType !== 'instructor') {
+        if (participant.userRole !== 'instructor') {
             logger.warn(`Usuario ${participant.userName} intentó cerrar una encuesta sin ser instructor`);
             return;
         }
@@ -533,7 +533,7 @@ io.on("connection", (socket) => {
         if (!participant) return;
 
         // Solo los instructores pueden enviar notificaciones broadcast
-        if (participant.userType !== 'instructor') {
+        if (participant.userRole !== 'instructor') {
             logger.warn(`Usuario ${participant.userName} intentó enviar una notificación broadcast sin ser instructor`);
             return;
         }
@@ -584,13 +584,13 @@ io.on("connection", (socket) => {
 
 // Eventos para el namespace de tiempo real
 realTimeNamespace.on('connection', (socket) => {
-    const { userId, userName, userType, salaId } = socket.handshake.query;
+    const { userId, userName, userRole, salaId } = socket.handshake.query;
 
     logger.info('Nueva conexión en namespace de tiempo real', { 
         socketId: socket.id, 
         userId, 
         userName, 
-        userType, 
+        userRole, 
         salaId 
     });
 
@@ -610,14 +610,14 @@ realTimeNamespace.on('connection', (socket) => {
 
     // Manejar eventos de tiempo real
     socket.on('join-room', (roomData) => {
-        const { salaId, userId, userName, userType } = roomData;
+        const { salaId, userId, userName, userRole } = roomData;
         
         logger.debug('Unión a sala de tiempo real', { 
             socketId: socket.id, 
             salaId, 
             userId, 
             userName, 
-            userType 
+            userRole 
         });
 
         // Verificar si la sala existe
