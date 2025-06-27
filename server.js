@@ -15,20 +15,6 @@ const io = new socketIo.Server(server, {
     pingInterval: 25000
 });
 
-// Ruta para verificar que el servidor está funcionando
-app.get('/', (req, res) => {
-    res.send('Servidor de SENA funcionando correctamente');
-});
-
-// Ruta para verificar el estado de WebSocket
-app.get('/status', (req, res) => {
-    res.json({
-        status: 'online',
-        connections: rooms.size,
-        totalParticipants: Array.from(rooms.values()).reduce((total, room) => total + room.participants.size, 0)
-    });
-});
-
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, () => {
@@ -42,56 +28,35 @@ const rooms = new Map();
 // Mapa para almacenar notificaciones pendientes
 const pendingNotifications = new Map();
 
-// Mapa para almacenar conexiones de WebSocket para actualizaciones en tiempo real
-const realTimeConnections = new Map();
-
 io.on("connection", (socket) => {
     console.log(`Nueva conexión establecida: ${socket.id}`);
 
-    // Manejar conexiones WebSocket para actualizaciones en tiempo real
-    socket.on("register_realtime", ({ userId, userType }) => {
-        console.log(`Usuario ${userId} (${userType}) registrado para actualizaciones en tiempo real`);
-        
-        // Guardar la conexión para notificaciones en tiempo real
-        realTimeConnections.set(userId, {
-            socketId: socket.id,
-            userType: userType,
-            connectedAt: new Date()
-        });
-        
-        // Enviar notificaciones pendientes si existen
-        if (pendingNotifications.has(userId)) {
-            const notifications = pendingNotifications.get(userId);
-            notifications.forEach(notification => {
-                socket.emit('notification', notification);
-            });
-            pendingNotifications.delete(userId);
-        }
-    });
-
     // Unirse a una sala
     socket.on("join-room", ({ salaId, userId, userName, userType }) => {
-        // Asegurarse de que salaId sea una cadena para evitar problemas de comparación
-        salaId = String(salaId);
-        
-        console.log(`Usuario ${userName} (${userType}, ID: ${userId}) está uniéndose a la sala ${salaId}`);
-        console.log(`Socket ID: ${socket.id}`);
+        console.log(`Usuario ${userName} (${userType}) está uniéndose a la sala ${salaId}`);
 
         // Crear la sala si no existe
         if (!rooms.has(salaId)) {
-            console.log(`Creando nueva sala: ${salaId}`);
             rooms.set(salaId, {
                 participants: new Map(),
                 createdAt: new Date(),
                 messages: [],
-                polls: [],
-                notifications: []
+                polls: [], // Agregar array para almacenar encuestas
+                notifications: [] // Agregar array para almacenar notificaciones
             });
-        } else {
-            console.log(`Sala existente: ${salaId}, Participantes actuales: ${rooms.get(salaId).participants.size}`);
         }
 
         const room = rooms.get(salaId);
+        
+        // Verificar si ya hay dos usuarios diferentes en la sala
+        const existingParticipants = Array.from(room.participants.values());
+        const hasDifferentUsers = existingParticipants.some(p => p.userId !== userId);
+
+        // Si ya hay dos usuarios diferentes, no permitir más conexiones
+        if (hasDifferentUsers && existingParticipants.length >= 2) {
+            socket.emit('room-full', { message: 'La sala ya está llena' });
+            return;
+        }
         
         // Agregar participante a la sala
         room.participants.set(socket.id, {
@@ -115,14 +80,10 @@ io.on("connection", (socket) => {
                 id,
                 ...info
             }));
-        
-        console.log(`Enviando ${participantsInfo.length} participantes existentes a ${userName}`);
-        console.log('Participantes:', participantsInfo.map(p => `${p.userName} (${p.id})`));
 
         socket.emit('existing-participants', participantsInfo);
 
         // Notificar a otros participantes sobre el nuevo usuario
-        console.log(`Notificando a otros participantes sobre ${userName}`);
         socket.to(salaId).emit('user-joined', {
             id: socket.id,
             userId,
@@ -157,16 +118,7 @@ io.on("connection", (socket) => {
             return;
         }
         
-        console.log(`Señal enviada de ${participant.userName} (${socket.id}) a ${payload.userToSignal}`);
-        
-        // Verificar si el destinatario existe
-        const targetParticipant = Array.from(room.participants.entries())
-            .find(([id, _]) => id === payload.userToSignal);
-        
-        if (!targetParticipant) {
-            console.error(`Error: El destinatario ${payload.userToSignal} no existe en la sala ${socket.salaId}`);
-            return;
-        }
+        console.log(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
 
         io.to(payload.userToSignal).emit('user-joined-with-signal', {
             signal: payload.signal, 
@@ -192,16 +144,7 @@ io.on("connection", (socket) => {
             return;
         }
         
-        console.log(`Señal devuelta de ${participant.userName} (${socket.id}) a ${payload.callerId}`);
-        
-        // Verificar si el destinatario existe
-        const targetParticipant = Array.from(room.participants.entries())
-            .find(([id, _]) => id === payload.callerId);
-        
-        if (!targetParticipant) {
-            console.error(`Error: El destinatario ${payload.callerId} no existe en la sala ${socket.salaId}`);
-            return;
-        }
+        console.log(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
 
         io.to(payload.callerId).emit('receiving-returned-signal', {
             signal: payload.signal,
@@ -465,17 +408,11 @@ io.on("connection", (socket) => {
         if (targetSocketId) {
             io.to(targetSocketId).emit('notification', notificationData);
         } else {
-            // Si el usuario no está en la sala, verificar si está conectado para actualizaciones en tiempo real
-            const realTimeConnection = realTimeConnections.get(userId);
-            if (realTimeConnection) {
-                io.to(realTimeConnection.socketId).emit('notification', notificationData);
-            } else {
-                // Si el usuario no está conectado, almacenar la notificación para enviarla cuando se conecte
-                if (!pendingNotifications.has(userId)) {
-                    pendingNotifications.set(userId, []);
-                }
-                pendingNotifications.get(userId).push(notificationData);
+            // Si el usuario no está en la sala, almacenar la notificación para enviarla cuando se conecte
+            if (!pendingNotifications.has(userId)) {
+                pendingNotifications.set(userId, []);
             }
+            pendingNotifications.get(userId).push(notificationData);
         }
     });
 
@@ -508,119 +445,31 @@ io.on("connection", (socket) => {
         io.to(socket.salaId).emit('notification', notificationData);
     });
 
-    // Manejar actualizaciones de asistencia para aprendices
-    socket.on('attendance_update', (data) => {
-        if (!data.aprendiz_id) return;
-        
-        // Buscar si el aprendiz está conectado para notificaciones en tiempo real
-        const realTimeConnection = realTimeConnections.get(data.aprendiz_id);
-        if (realTimeConnection) {
-            io.to(realTimeConnection.socketId).emit('notification', {
-                type: 'attendance_update',
-                data: data
-            });
-        } else {
-            // Guardar para enviar cuando se conecte
-            if (!pendingNotifications.has(data.aprendiz_id)) {
-                pendingNotifications.set(data.aprendiz_id, []);
-            }
-            pendingNotifications.get(data.aprendiz_id).push({
-                type: 'attendance_update',
-                data: data
-            });
-        }
-    });
-
-    // Manejar actualizaciones de anuncios para fichas
-    socket.on('announcement_update', (data) => {
-        if (!data.ficha_id) return;
-        
-        // Enviar a todos los aprendices de la ficha
-        // Esto requeriría una base de datos para obtener los aprendices de la ficha
-        // Por ahora, solo lo enviamos a todos los usuarios conectados
-        socket.broadcast.emit('notification', {
-            type: 'announcement_update',
-            data: data
-        });
-    });
-
-    // Manejar desconexiones
+    // Manejo de desconexión
     socket.on('disconnect', () => {
-        console.log(`Usuario desconectado: ${socket.id}`);
+        const salaId = socket.salaId;
+        if (!salaId) return;
         
-        // Buscar en todas las salas
-        for (const [salaId, room] of rooms.entries()) {
-            if (room.participants.has(socket.id)) {
-                const participant = room.participants.get(socket.id);
-                console.log(`El usuario ${participant.userName} (${socket.id}) ha salido de la sala ${salaId}`);
-                
-                // Notificar a otros participantes
-                socket.to(salaId).emit('user-left', {
-                    id: socket.id,
-                    userId: participant.userId,
-                    userName: participant.userName
-                });
-                
-                // Eliminar participante de la sala
-                room.participants.delete(socket.id);
-                console.log(`Participantes restantes en la sala ${salaId}: ${room.participants.size}`);
-                
-                // Si no quedan participantes, eliminar la sala después de un tiempo
-                if (room.participants.size === 0) {
-                    console.log(`La sala ${salaId} está vacía, se eliminará en 5 minutos si nadie se une`);
-                    setTimeout(() => {
-                        // Verificar nuevamente si la sala sigue vacía
-                        const currentRoom = rooms.get(salaId);
-                        if (currentRoom && currentRoom.participants.size === 0) {
-                            console.log(`Eliminando sala vacía: ${salaId}`);
-                            rooms.delete(salaId);
-                        }
-                    }, 300000); // 5 minutos
-                }
-                
-                break; // El usuario solo puede estar en una sala a la vez
-            }
-        }
-        
-        // Eliminar de las conexiones en tiempo real
-        for (const [userId, connection] of realTimeConnections.entries()) {
-            if (connection.socketId === socket.id) {
-                console.log(`Eliminando conexión en tiempo real para el usuario ${userId}`);
-                realTimeConnections.delete(userId);
-                break;
-            }
-        }
-    });
-
-    // Manejar ICE candidates
-    socket.on('ice-candidate', ({ to, candidate }) => {
-        const room = rooms.get(socket.salaId);
-        if (!room) {
-            console.error(`Error: Usuario ${socket.id} intentó enviar ICE candidate pero no está en una sala válida`);
-            return;
-        }
+        const room = rooms.get(salaId);
+        if (!room) return;
 
         const participant = room.participants.get(socket.id);
-        if (!participant) {
-            console.error(`Error: No se encontró información del participante ${socket.id}`);
-            return;
-        }
-        
-        console.log(`ICE candidate enviado de ${participant.userName} (${socket.id}) a ${to}`);
-        
-        // Verificar si el destinatario existe
-        const targetParticipant = Array.from(room.participants.entries())
-            .find(([id, _]) => id === to);
-        
-        if (!targetParticipant) {
-            console.error(`Error: El destinatario ${to} no existe en la sala ${socket.salaId}`);
-            return;
-        }
+        if (participant) {
+            console.log(`Usuario ${participant.userName} se desconectó de la sala ${salaId}`);
+            room.participants.delete(socket.id);
 
-        io.to(to).emit('ice-candidate', { 
-            from: socket.id,
-            candidate 
-        });
+            // Notificar a otros participantes
+            io.to(salaId).emit('user-left', socket.id);
+            io.to(salaId).emit('update-participant-list', 
+                Object.fromEntries(room.participants)
+            );
+
+            // Eliminar la sala si está vacía
+            if (room.participants.size === 0) {
+                console.log(`Sala ${salaId} cerrada por falta de participantes`);
+                rooms.delete(salaId);
+            }
+        }
     });
 });
 
