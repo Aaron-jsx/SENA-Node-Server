@@ -64,10 +64,10 @@ io.on("connection", (socket) => {
             }))
         );
 
-        // Verificación más estricta de usuarios diferentes
+        // Verificación de usuarios diferentes
         const isDifferentUser = existingParticipants.length === 0 || 
             existingParticipants.every(p => 
-                p.userId !== userId && 
+                p.userId !== userId || 
                 p.userName !== userName
             );
 
