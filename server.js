@@ -11,12 +11,20 @@ const io = new socketIo.Server(server, {
         methods: ["GET", "POST"],
         credentials: true
     },
-    transports: ['websocket'],
+    transports: ['websocket', 'polling'],
     pingTimeout: 60000,
     pingInterval: 25000
 });
 
 const PORT = process.env.PORT || 10000;
+
+// Configuración de CORS para Express
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    next();
+});
 
 // Dentro de la definición de rooms, agregar polls para almacenar encuestas
 const rooms = new Map();
@@ -46,10 +54,27 @@ const logger = winston.createLogger({
 // Crear namespace para actualizaciones en tiempo real
 const realTimeNamespace = io.of('/realtime');
 
+// Middleware de logging global
+io.use((socket, next) => {
+    logger.info('Socket middleware - Nueva conexión', { 
+        socketId: socket.id,
+        handshake: socket.handshake.query
+    });
+    next();
+});
+
+realTimeNamespace.use((socket, next) => {
+    logger.info('RealTime namespace middleware - Nueva conexión', { 
+        socketId: socket.id,
+        handshake: socket.handshake.query
+    });
+    next();
+});
+
 io.on("connection", (socket) => {
     const { userId, userName, userType, room } = socket.handshake.query;
 
-    logger.info('Nueva conexión de socket', { 
+    logger.info('Nueva conexión de socket principal', { 
         socketId: socket.id, 
         userId, 
         userName, 
@@ -533,9 +558,18 @@ realTimeNamespace.on('connection', (socket) => {
         salaId 
     });
 
+    // Manejar errores de conexión
+    socket.on('connect_error', (error) => {
+        logger.error('Error de conexión en namespace de tiempo real', { 
+            socketId: socket.id,
+            error: error.message 
+        });
+    });
+
     // Unirse a la sala específica
     if (salaId) {
         socket.join(salaId);
+        logger.info(`Socket ${socket.id} unido a sala ${salaId}`);
     }
 
     // Manejar eventos de tiempo real
@@ -581,14 +615,24 @@ realTimeNamespace.on('connection', (socket) => {
     });
 
     // Manejar desconexión
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
         logger.info('Desconexión en namespace de tiempo real', { 
-            socketId: socket.id 
+            socketId: socket.id,
+            reason 
         });
     });
 });
 
+// Ruta de prueba para verificar el servidor
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'OK', 
+        message: 'Servidor de tiempo real funcionando correctamente' 
+    });
+});
+
 // Iniciar el servidor
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
+    console.log(`Escuchando en todas las interfaces de red`);
 });
