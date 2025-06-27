@@ -118,7 +118,7 @@ io.on("connection", (socket) => {
         const room = rooms.get(roomId);
         
         // Verificar límite de participantes
-        if (room.participants.size >= 10) {
+        if (room.participants.size >= 20) { // Aumentado a 20 para permitir más participantes
             logger.warn(`Sala ${roomId} llena. No se permiten más participantes.`);
             socket.emit('room-full', { 
                 message: 'La sala ya tiene el máximo de participantes permitidos' 
@@ -140,25 +140,9 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // SOLUCIÓN MEJORADA: En lugar de eliminar conexiones anteriores,
-        // simplemente asignamos un ID único diferente para cada conexión
-        // Esto permite múltiples conexiones del mismo usuario (mismo ID y rol)
-        // pero cada una tendrá un identificador único para WebRTC
+        // SOLUCIÓN MEJORADA: Permitir múltiples conexiones del mismo usuario con IDs únicos
+        // Esto permite que un mismo usuario (mismo ID y rol) pueda conectarse desde diferentes dispositivos
         
-        // Verificar si hay otros participantes con el mismo ID y rol y asignar un sufijo
-        let duplicateCount = 0;
-        for (const [_, participant] of room.participants.entries()) {
-            if (participant.userId === userId && participant.userRole === userRole) {
-                duplicateCount++;
-            }
-        }
-        
-        // Si hay duplicados, agregar un sufijo al ID único
-        if (duplicateCount > 0) {
-            uniqueUserId = `${uniqueUserId}_dup${duplicateCount}`;
-            logger.info(`Usuario duplicado detectado, asignando ID único con sufijo: ${uniqueUserId}`);
-        }
-
         // Agregar participante con ID único
         room.participants.set(socket.id, {
             userId,
@@ -180,7 +164,7 @@ io.on("connection", (socket) => {
         });
 
         // Notificar al usuario que se unió exitosamente
-        socket.emit('joined-room', {
+        socket.emit('room-joined', {
             roomId,
             userId,
             uniqueUserId,
