@@ -526,11 +526,7 @@ io.on("connection", (socket) => {
     });
 });
 
-// Iniciar el servidor
-server.listen(PORT, () => {
-    console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
-});
-
+// Configuración del namespace de tiempo real
 realTimeNamespace.on('connection', (socket) => {
     const { userId, userName, userType, salaId } = socket.handshake.query;
 
@@ -542,11 +538,15 @@ realTimeNamespace.on('connection', (socket) => {
         salaId 
     });
 
-    // Unirse a la sala de tiempo real
-    socket.join(salaId);
+    // Unirse a la sala específica
+    if (salaId) {
+        socket.join(salaId);
+    }
 
     // Manejar eventos de tiempo real
-    socket.on('join-room', ({ salaId, userId, userName, userType }) => {
+    socket.on('join-room', (roomData) => {
+        const { salaId, userId, userName, userType } = roomData;
+        
         logger.debug('Unión a sala de tiempo real', { 
             socketId: socket.id, 
             salaId, 
@@ -570,7 +570,7 @@ realTimeNamespace.on('connection', (socket) => {
             realTimeNamespace.to(salaId).emit('attendance-update', {
                 userId,
                 userName,
-                status: 'presente', // Lógica de asistencia aquí
+                status: 'presente',
                 timestamp: new Date()
             });
         });
@@ -591,4 +591,9 @@ realTimeNamespace.on('connection', (socket) => {
             socketId: socket.id 
         });
     });
+});
+
+// Iniciar el servidor
+server.listen(PORT, () => {
+    console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
 }); 
