@@ -48,6 +48,9 @@ const logger = winston.createLogger({
     ]
 });
 
+// Crear namespace para actualizaciones en tiempo real
+const realTimeNamespace = io.of('/realtime');
+
 io.on("connection", (socket) => {
     const { userId, userName, userType, room } = socket.handshake.query;
 
@@ -526,4 +529,58 @@ io.on("connection", (socket) => {
 // Iniciar el servidor
 server.listen(PORT, () => {
     console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
+});
+
+realTimeNamespace.on('connection', (socket) => {
+    const { userId, userName, userType, salaId } = socket.handshake.query;
+
+    logger.info('Nueva conexión de socket de tiempo real', { 
+        socketId: socket.id, 
+        userId, 
+        userName, 
+        userType,
+        salaId
+    });
+
+    // Unir al usuario a una sala específica
+    socket.join(salaId);
+
+    // Manejar eventos de tiempo real
+    socket.on('real-time-update', (data) => {
+        logger.debug('Actualización en tiempo real recibida', { 
+            socketId: socket.id, 
+            data 
+        });
+
+        // Transmitir a todos en la sala excepto al remitente
+        socket.to(salaId).emit('real-time-update', data);
+    });
+
+    // Eventos específicos de actualización
+    socket.on('attendance-update', (attendanceData) => {
+        logger.info('Actualización de asistencia', { 
+            socketId: socket.id, 
+            attendanceData 
+        });
+
+        socket.to(salaId).emit('attendance-update', attendanceData);
+    });
+
+    socket.on('announcement-update', (announcementData) => {
+        logger.info('Actualización de anuncio', { 
+            socketId: socket.id, 
+            announcementData 
+        });
+
+        socket.to(salaId).emit('announcement-update', announcementData);
+    });
+
+    // Manejo de desconexión
+    socket.on('disconnect', () => {
+        logger.info('Socket de tiempo real desconectado', { 
+            socketId: socket.id, 
+            userId, 
+            userName 
+        });
+    });
 }); 
