@@ -53,75 +53,61 @@ io.on("connection", (socket) => {
 
         const room = rooms.get(salaId);
         
-        // Verificar si ya hay usuarios en la sala
-        const existingParticipants = Array.from(room.participants.values());
-        
-        console.log(`[DEBUG] Participantes existentes en la sala:`, 
-            existingParticipants.map(p => ({
-                userId: p.userId, 
-                userName: p.userName, 
-                userType: p.userType
-            }))
-        );
-
-        // Verificación de usuarios diferentes
-        const isDifferentUser = existingParticipants.length === 0 || 
-            existingParticipants.every(p => 
-                p.userId !== userId || 
-                p.userName !== userName
-            );
-
-        // Si no son usuarios diferentes, no permitir la conexión
-        if (!isDifferentUser) {
-            console.log(`[DEBUG] Conexión rechazada: Usuario repetido`);
-            socket.emit('room-error', { 
-                message: 'No puedes unirte a la misma sala dos veces o con un usuario repetido' 
+        // Verificar límite de participantes
+        if (room.participants.size >= 2) {
+            console.log(`[DEBUG] Sala ${salaId} llena. No se permiten más participantes.`);
+            socket.emit('room-full', { 
+                message: 'La sala ya tiene el máximo de participantes permitidos' 
             });
             return;
         }
 
-        // Limitar a máximo 2 participantes
-        if (existingParticipants.length >= 2) {
-            console.log(`[DEBUG] Conexión rechazada: Sala llena`);
-            socket.emit('room-full', { message: 'La sala ya está llena' });
+        // Verificar usuarios duplicados
+        const isDuplicateUser = Array.from(room.participants.values()).some(
+            participant => 
+                participant.userId === userId || 
+                participant.userName === userName
+        );
+
+        if (isDuplicateUser) {
+            console.log(`[DEBUG] Intento de unión con usuario duplicado`);
+            socket.emit('room-error', { 
+                message: 'No puedes unirte a la misma sala dos veces' 
+            });
             return;
         }
-        
-        // Agregar participante a la sala
+
+        // Agregar participante
         room.participants.set(socket.id, {
             userId,
             userName,
             userType,
             joinedAt: new Date(),
-            raisedHand: false,
-            isAudioEnabled: true,
-            isVideoEnabled: true
+            socketId: socket.id
         });
 
-        // Unir el socket a la sala
+        // Unir socket a la sala
         socket.join(salaId);
         socket.salaId = salaId;
 
         console.log(`[DEBUG] Usuario unido exitosamente:
 - Socket ID: ${socket.id}
 - Sala ID: ${salaId}
-- User ID: ${userId}
-- User Name: ${userName}
-- User Type: ${userType}`);
+- Participantes en sala: ${room.participants.size}`);
 
-        // Enviar lista de participantes existentes al nuevo usuario
-        const participantsInfo = Array.from(room.participants.entries())
+        // Enviar lista de participantes existentes
+        const existingParticipants = Array.from(room.participants.entries())
             .filter(([id]) => id !== socket.id)
             .map(([id, info]) => ({
-                id,
+                socketId: id,
                 ...info
             }));
 
-        socket.emit('existing-participants', participantsInfo);
+        socket.emit('existing-participants', existingParticipants);
 
-        // Notificar a otros participantes sobre el nuevo usuario
+        // Notificar a otros participantes
         socket.to(salaId).emit('user-joined', {
-            id: socket.id,
+            socketId: socket.id,
             userId,
             userName,
             userType
