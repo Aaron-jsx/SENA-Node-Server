@@ -118,7 +118,7 @@ io.on("connection", (socket) => {
         const room = rooms.get(roomId);
         
         // Verificar límite de participantes
-        if (room.participants.size >= 20) { // Aumentado a 20 para permitir más participantes
+        if (room.participants.size >= 20) {
             logger.warn(`Sala ${roomId} llena. No se permiten más participantes.`);
             socket.emit('room-full', { 
                 message: 'La sala ya tiene el máximo de participantes permitidos' 
@@ -130,27 +130,29 @@ io.on("connection", (socket) => {
         let uniqueUserId = generateUniqueUserId(userId, userRole);
         
         // Verificar si este socket ya está en la sala
-        const isSocketDuplicate = room.participants.has(socket.id);
+        const isSocketDuplicate = Array.from(room.participants.values())
+            .some(p => p.userId === userId && p.userRole === userRole);
         
         if (isSocketDuplicate) {
-            logger.warn(`Socket duplicado intentando unirse a sala ${roomId}`);
+            logger.warn(`Usuario duplicado intentando unirse a sala ${roomId}`);
             socket.emit('room-error', { 
                 message: 'Ya estás conectado a esta sala' 
             });
             return;
         }
 
-        // SOLUCIÓN MEJORADA: Permitir múltiples conexiones del mismo usuario con IDs únicos
-        // Esto permite que un mismo usuario (mismo ID y rol) pueda conectarse desde diferentes dispositivos
-        
-        // Agregar participante con ID único
+        // Agregar participante con información detallada
         room.participants.set(socket.id, {
             userId,
             userName,
             userRole,
             uniqueUserId,
             joinedAt: new Date(),
-            socketId: socket.id
+            socketId: socket.id,
+            metadata: {
+                ipAddress: socket.handshake.address,
+                userAgent: socket.handshake.headers['user-agent']
+            }
         });
 
         // Unir socket a la sala
@@ -170,7 +172,12 @@ io.on("connection", (socket) => {
             uniqueUserId,
             userName,
             userRole,
-            participants: Array.from(room.participants.values())
+            participants: Array.from(room.participants.values()).map(p => ({
+                userId: p.userId,
+                uniqueUserId: p.uniqueUserId,
+                userName: p.userName,
+                userRole: p.userRole
+            }))
         });
 
         // Notificar a otros participantes
