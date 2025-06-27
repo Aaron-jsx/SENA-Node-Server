@@ -109,7 +109,8 @@ io.on("connection", (socket) => {
                 createdAt: new Date(),
                 messages: [],
                 polls: [],
-                notifications: []
+                notifications: [],
+                screenSharing: null
             });
             logger.info(`Sala ${roomId} creada`);
         }
@@ -206,6 +207,14 @@ io.on("connection", (socket) => {
                 userRole: p.userRole
             }))
         );
+
+        // Notificar si alguien está compartiendo pantalla
+        if (room.screenSharing) {
+            socket.emit('screen-sharing-started', {
+                userId: room.screenSharing.userId,
+                userName: room.screenSharing.userName
+            });
+        }
     });
 
     // Manejo de señalización WebRTC
@@ -383,6 +392,13 @@ io.on("connection", (socket) => {
                 isSharing: true
             });
             logger.info(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.roomId}`);
+
+            // Guardar información de quién está compartiendo pantalla
+            room.screenSharing = {
+                userId: participant.uniqueUserId || participant.userId,
+                userName: participant.userName,
+                socketId: socket.id
+            };
         }
     });
 
@@ -400,6 +416,14 @@ io.on("connection", (socket) => {
                 isSharing: false
             });
             logger.info(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.roomId}`);
+
+            // Verificar si este usuario es quien estaba compartiendo pantalla
+            if (room.screenSharing && room.screenSharing.socketId === socket.id) {
+                logger.info(`Usuario ${participant.userName} detuvo compartir pantalla en sala ${socket.roomId}`);
+                
+                // Limpiar información de compartir pantalla
+                room.screenSharing = null;
+            }
         }
     });
 
