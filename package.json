@@ -1,6 +1,6 @@
 {
   "name": "sena-node-server",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "Servidor de señalización para SENA",
   "main": "server.js",
   "scripts": {

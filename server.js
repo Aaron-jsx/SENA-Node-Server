@@ -32,6 +32,12 @@ const rooms = new Map();
 // Mapa para almacenar notificaciones pendientes
 const pendingNotifications = new Map();
 
+// Función para generar un ID único para cada usuario
+function generateUniqueUserId(userId, userRole) {
+    // Combinar ID de usuario, rol y un timestamp para garantizar unicidad
+    return `${userId}_${userRole}_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+}
+
 // Configuración de logs más detallada
 const logger = winston.createLogger({
     level: 'debug',
@@ -73,13 +79,17 @@ realTimeNamespace.use((socket, next) => {
 
 io.on("connection", (socket) => {
     const { userId, userName, userRole, roomId } = socket.handshake.query;
+    
+    // Generar ID único para este usuario
+    const uniqueUserId = generateUniqueUserId(userId, userRole);
 
     logger.info('Nueva conexión de socket principal', { 
         socketId: socket.id, 
         userId, 
         userName, 
         userRole, 
-        roomId 
+        roomId,
+        uniqueUserId
     });
 
     // Unirse a una sala
@@ -115,28 +125,45 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Verificar solo si es exactamente el mismo usuario con el mismo rol
-        // Esto permite que un instructor y un aprendiz con el mismo ID puedan unirse
-        const isDuplicateUser = Array.from(room.participants.values()).some(
-            participant => 
-                participant.userId === userId && 
-                participant.userName === userName &&
-                participant.userRole === userRole
-        );
-
-        if (isDuplicateUser) {
-            logger.warn(`Intento de unión con usuario duplicado en sala ${roomId}`);
+        // Generar un ID único para este usuario en esta sala
+        let uniqueUserId = generateUniqueUserId(userId, userRole);
+        
+        // Verificar si este socket ya está en la sala
+        const isSocketDuplicate = room.participants.has(socket.id);
+        
+        if (isSocketDuplicate) {
+            logger.warn(`Socket duplicado intentando unirse a sala ${roomId}`);
             socket.emit('room-error', { 
-                message: 'Ya estás en esta sala con este rol' 
+                message: 'Ya estás conectado a esta sala' 
             });
             return;
         }
 
-        // Agregar participante
+        // SOLUCIÓN MEJORADA: En lugar de eliminar conexiones anteriores,
+        // simplemente asignamos un ID único diferente para cada conexión
+        // Esto permite múltiples conexiones del mismo usuario (mismo ID y rol)
+        // pero cada una tendrá un identificador único para WebRTC
+        
+        // Verificar si hay otros participantes con el mismo ID y rol y asignar un sufijo
+        let duplicateCount = 0;
+        for (const [_, participant] of room.participants.entries()) {
+            if (participant.userId === userId && participant.userRole === userRole) {
+                duplicateCount++;
+            }
+        }
+        
+        // Si hay duplicados, agregar un sufijo al ID único
+        if (duplicateCount > 0) {
+            uniqueUserId = `${uniqueUserId}_dup${duplicateCount}`;
+            logger.info(`Usuario duplicado detectado, asignando ID único con sufijo: ${uniqueUserId}`);
+        }
+
+        // Agregar participante con ID único
         room.participants.set(socket.id, {
             userId,
             userName,
             userRole,
+            uniqueUserId,
             joinedAt: new Date(),
             socketId: socket.id
         });
@@ -147,13 +174,15 @@ io.on("connection", (socket) => {
 
         logger.info(`Usuario unido a sala ${roomId}`, { 
             socketId: socket.id, 
-            participantCount: room.participants.size 
+            participantCount: room.participants.size,
+            uniqueUserId
         });
 
         // Notificar al usuario que se unió exitosamente
         socket.emit('joined-room', {
             roomId,
             userId,
+            uniqueUserId,
             userName,
             userRole,
             participants: Array.from(room.participants.values())
@@ -162,15 +191,17 @@ io.on("connection", (socket) => {
         // Notificar a otros participantes
         socket.to(roomId).emit('user-connected', {
             userId,
+            uniqueUserId,
             userName,
             userRole
         });
 
         // Enviar lista de usuarios actuales al nuevo participante
         socket.emit('room-users', Array.from(room.participants.values())
-            .filter(p => p.userId !== userId)
+            .filter(p => p.socketId !== socket.id)
             .map(p => ({
                 userId: p.userId,
+                uniqueUserId: p.uniqueUserId,
                 userName: p.userName,
                 userRole: p.userRole
             }))
@@ -193,9 +224,9 @@ io.on("connection", (socket) => {
 
         logger.info(`Oferta enviada de ${fromParticipant.userName} a ${to}`);
 
-        // Encontrar el socket ID del destinatario
+        // Encontrar el socket ID del destinatario por uniqueUserId o userId
         const toParticipant = Array.from(room.participants.entries())
-            .find(([_, p]) => p.userId === to);
+            .find(([_, p]) => p.uniqueUserId === to || p.userId === to);
 
         if (!toParticipant) {
             logger.error(`Error: No se encontró el destinatario ${to}`);
@@ -203,7 +234,7 @@ io.on("connection", (socket) => {
         }
 
         io.to(toParticipant[0]).emit('offer', {
-            from: fromParticipant.userId,
+            from: fromParticipant.uniqueUserId || fromParticipant.userId,
             offer
         });
     });
@@ -223,9 +254,9 @@ io.on("connection", (socket) => {
 
         logger.info(`Respuesta enviada de ${fromParticipant.userName} a ${to}`);
 
-        // Encontrar el socket ID del destinatario
+        // Encontrar el socket ID del destinatario por uniqueUserId o userId
         const toParticipant = Array.from(room.participants.entries())
-            .find(([_, p]) => p.userId === to);
+            .find(([_, p]) => p.uniqueUserId === to || p.userId === to);
 
         if (!toParticipant) {
             logger.error(`Error: No se encontró el destinatario ${to}`);
@@ -233,7 +264,7 @@ io.on("connection", (socket) => {
         }
 
         io.to(toParticipant[0]).emit('answer', {
-            from: fromParticipant.userId,
+            from: fromParticipant.uniqueUserId || fromParticipant.userId,
             answer
         });
     });
@@ -253,9 +284,9 @@ io.on("connection", (socket) => {
 
         logger.info(`ICE candidate enviado de ${fromParticipant.userName} a ${to}`);
 
-        // Encontrar el socket ID del destinatario
+        // Encontrar el socket ID del destinatario por uniqueUserId o userId
         const toParticipant = Array.from(room.participants.entries())
-            .find(([_, p]) => p.userId === to);
+            .find(([_, p]) => p.uniqueUserId === to || p.userId === to);
 
         if (!toParticipant) {
             logger.error(`Error: No se encontró el destinatario ${to}`);
@@ -263,7 +294,7 @@ io.on("connection", (socket) => {
         }
 
         io.to(toParticipant[0]).emit('ice-candidate', {
-            from: fromParticipant.userId,
+            from: fromParticipant.uniqueUserId || fromParticipant.userId,
             candidate
         });
     });
@@ -573,8 +604,8 @@ io.on("connection", (socket) => {
         room.participants.delete(socket.id);
         logger.info(`Participante eliminado de la sala ${roomId}`);
 
-        // Notificar a otros participantes
-        socket.to(roomId).emit('user-left', participant.userId);
+        // Notificar a otros participantes usando el ID único si está disponible
+        socket.to(roomId).emit('user-left', participant.uniqueUserId || participant.userId);
 
         // Si la sala está vacía, eliminarla
         if (room.participants.size === 0) {
