@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
+const winston = require('winston');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,17 +29,45 @@ const rooms = new Map();
 // Mapa para almacenar notificaciones pendientes
 const pendingNotifications = new Map();
 
+// Configuración de logs más detallada
+const logger = winston.createLogger({
+    level: 'debug',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.printf(({ timestamp, level, message, ...metadata }) => {
+            let msg = `${timestamp} [${level}]: ${message} `;
+            if (Object.keys(metadata).length > 0) {
+                msg += JSON.stringify(metadata);
+            }
+            return msg;
+        })
+    ),
+    transports: [
+        new winston.transports.Console(),
+        new winston.transports.File({ filename: 'server.log' })
+    ]
+});
+
 io.on("connection", (socket) => {
-    console.log(`Nueva conexión establecida: ${socket.id}`);
+    const { userId, userName, userType, room } = socket.handshake.query;
+
+    logger.info('Nueva conexión de socket', { 
+        socketId: socket.id, 
+        userId, 
+        userName, 
+        userType, 
+        room 
+    });
 
     // Unirse a una sala
     socket.on("join-room", ({ salaId, userId, userName, userType }) => {
-        console.log(`[DEBUG] Intento de unión a sala:
-- Socket ID: ${socket.id}
-- Sala ID: ${salaId}
-- User ID: ${userId}
-- User Name: ${userName}
-- User Type: ${userType}`);
+        logger.debug('Intento de unión a sala', { 
+            socketId: socket.id, 
+            salaId, 
+            userId, 
+            userName, 
+            userType 
+        });
 
         // Crear la sala si no existe
         if (!rooms.has(salaId)) {
@@ -49,13 +78,14 @@ io.on("connection", (socket) => {
                 polls: [],
                 notifications: []
             });
+            logger.info(`Sala ${salaId} creada`);
         }
 
         const room = rooms.get(salaId);
         
         // Verificar límite de participantes
         if (room.participants.size >= 2) {
-            console.log(`[DEBUG] Sala ${salaId} llena. No se permiten más participantes.`);
+            logger.warn(`Sala ${salaId} llena. No se permiten más participantes.`);
             socket.emit('room-full', { 
                 message: 'La sala ya tiene el máximo de participantes permitidos' 
             });
@@ -70,7 +100,7 @@ io.on("connection", (socket) => {
         );
 
         if (isDuplicateUser) {
-            console.log(`[DEBUG] Intento de unión con usuario duplicado`);
+            logger.warn(`Intento de unión con usuario duplicado en sala ${salaId}`);
             socket.emit('room-error', { 
                 message: 'No puedes unirte a la misma sala dos veces' 
             });
@@ -90,10 +120,10 @@ io.on("connection", (socket) => {
         socket.join(salaId);
         socket.salaId = salaId;
 
-        console.log(`[DEBUG] Usuario unido exitosamente:
-- Socket ID: ${socket.id}
-- Sala ID: ${salaId}
-- Participantes en sala: ${room.participants.size}`);
+        logger.info(`Usuario unido a sala ${salaId}`, { 
+            socketId: socket.id, 
+            participantCount: room.participants.size 
+        });
 
         // Enviar lista de participantes existentes
         const existingParticipants = Array.from(room.participants.entries())
@@ -122,24 +152,24 @@ io.on("connection", (socket) => {
             pendingNotifications.delete(userId);
         }
 
-        console.log(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
+        logger.info(`Participantes actuales en la sala ${salaId}: ${room.participants.size}`);
     });
 
     // Manejo de señalización WebRTC
     socket.on('sending-signal', payload => {
         const room = rooms.get(socket.salaId);
         if (!room) {
-            console.error(`Error: Usuario ${socket.id} intentó enviar señal pero no está en una sala válida`);
+            logger.error(`Error: Usuario ${socket.id} intentó enviar señal pero no está en una sala válida`);
             return;
         }
 
         const participant = room.participants.get(socket.id);
         if (!participant) {
-            console.error(`Error: No se encontró información del participante ${socket.id}`);
+            logger.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
         
-        console.log(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
+        logger.info(`Señal enviada de ${participant.userName} a ${payload.userToSignal}`);
 
         io.to(payload.userToSignal).emit('user-joined-with-signal', {
             signal: payload.signal, 
@@ -155,17 +185,17 @@ io.on("connection", (socket) => {
     socket.on('returning-signal', payload => {
         const room = rooms.get(socket.salaId);
         if (!room) {
-            console.error(`Error: Usuario ${socket.id} intentó devolver señal pero no está en una sala válida`);
+            logger.error(`Error: Usuario ${socket.id} intentó devolver señal pero no está en una sala válida`);
             return;
         }
         
         const participant = room.participants.get(socket.id);
         if (!participant) {
-            console.error(`Error: No se encontró información del participante ${socket.id}`);
+            logger.error(`Error: No se encontró información del participante ${socket.id}`);
             return;
         }
         
-        console.log(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
+        logger.info(`Señal devuelta de ${participant.userName} a ${payload.callerId}`);
 
         io.to(payload.callerId).emit('receiving-returned-signal', {
             signal: payload.signal,
@@ -196,7 +226,7 @@ io.on("connection", (socket) => {
         };
         
         room.messages.push(messageData);
-        console.log(`Mensaje de chat de ${participant.userName} en sala ${socket.salaId}: ${message.text}`);
+        logger.info(`Mensaje de chat de ${participant.userName} en sala ${socket.salaId}: ${message.text}`);
         
         // Enviar a todos los participantes de la sala
         io.to(socket.salaId).emit('chat-message', messageData);
@@ -261,7 +291,7 @@ io.on("connection", (socket) => {
                 userName: participant.userName,
                 isSharing: true
             });
-            console.log(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.salaId}`);
+            logger.info(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.salaId}`);
         }
     });
 
@@ -278,7 +308,7 @@ io.on("connection", (socket) => {
                 userName: participant.userName,
                 isSharing: false
             });
-            console.log(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.salaId}`);
+            logger.info(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.salaId}`);
         }
     });
 
@@ -292,7 +322,7 @@ io.on("connection", (socket) => {
 
         // Solo los instructores pueden crear encuestas
         if (participant.userType !== 'instructor') {
-            console.log(`Usuario ${participant.userName} intentó crear una encuesta sin ser instructor`);
+            logger.warn(`Usuario ${participant.userName} intentó crear una encuesta sin ser instructor`);
             return;
         }
         
@@ -306,7 +336,7 @@ io.on("connection", (socket) => {
 
         // Guardar la encuesta en la sala
         room.polls.push(poll);
-        console.log(`Encuesta creada por ${participant.userName} en sala ${socket.salaId}: ${poll.question}`);
+        logger.info(`Encuesta creada por ${participant.userName} en sala ${socket.salaId}: ${poll.question}`);
         
         // Notificar a todos los participantes
         io.to(socket.salaId).emit('poll-created', poll);
@@ -338,13 +368,13 @@ io.on("connection", (socket) => {
         
         // Verificar si el usuario ya votó
         if (poll.voters.includes(participant.userId)) {
-            console.log(`Usuario ${participant.userName} intentó votar más de una vez en la encuesta ${pollId}`);
+            logger.warn(`Usuario ${participant.userName} intentó votar más de una vez en la encuesta ${pollId}`);
             return;
         }
 
         // Verificar si la opción es válida
         if (optionIndex < 0 || optionIndex >= poll.options.length) {
-            console.log(`Usuario ${participant.userName} intentó votar por una opción inválida en la encuesta ${pollId}`);
+            logger.warn(`Usuario ${participant.userName} intentó votar por una opción inválida en la encuesta ${pollId}`);
             return;
         }
         
@@ -352,7 +382,7 @@ io.on("connection", (socket) => {
         poll.results[optionIndex]++;
         poll.voters.push(participant.userId);
         
-        console.log(`Usuario ${participant.userName} votó en la encuesta ${pollId}, opción: ${poll.options[optionIndex]}`);
+        logger.info(`Usuario ${participant.userName} votó en la encuesta ${pollId}, opción: ${poll.options[optionIndex]}`);
 
         // Actualizar la encuesta en la sala
         room.polls[pollIndex] = poll;
@@ -370,7 +400,7 @@ io.on("connection", (socket) => {
 
         // Solo los instructores pueden cerrar encuestas
         if (participant.userType !== 'instructor') {
-            console.log(`Usuario ${participant.userName} intentó cerrar una encuesta sin ser instructor`);
+            logger.warn(`Usuario ${participant.userName} intentó cerrar una encuesta sin ser instructor`);
             return;
         }
         
@@ -381,7 +411,7 @@ io.on("connection", (socket) => {
         // Marcar como inactiva
         room.polls[pollIndex].active = false;
         
-        console.log(`Encuesta ${pollId} cerrada por ${participant.userName}`);
+        logger.info(`Encuesta ${pollId} cerrada por ${participant.userName}`);
         
         // Notificar a todos los participantes
         io.to(socket.salaId).emit('poll-closed', { pollId });
@@ -446,7 +476,7 @@ io.on("connection", (socket) => {
 
         // Solo los instructores pueden enviar notificaciones broadcast
         if (participant.userType !== 'instructor') {
-            console.log(`Usuario ${participant.userName} intentó enviar una notificación broadcast sin ser instructor`);
+            logger.warn(`Usuario ${participant.userName} intentó enviar una notificación broadcast sin ser instructor`);
             return;
         }
 
@@ -469,26 +499,25 @@ io.on("connection", (socket) => {
     // Manejo de desconexión
     socket.on('disconnect', () => {
         const salaId = socket.salaId;
-        if (!salaId) return;
         
-        const room = rooms.get(salaId);
-        if (!room) return;
-
-        const participant = room.participants.get(socket.id);
-        if (participant) {
-            console.log(`Usuario ${participant.userName} se desconectó de la sala ${salaId}`);
+        if (salaId && rooms.has(salaId)) {
+            const room = rooms.get(salaId);
             room.participants.delete(socket.id);
 
-            // Notificar a otros participantes
-            io.to(salaId).emit('user-left', socket.id);
-            io.to(salaId).emit('update-participant-list', 
-                Object.fromEntries(room.participants)
-            );
+            logger.info(`Usuario desconectado de sala ${salaId}`, { 
+                socketId: socket.id,
+                participantCount: room.participants.size 
+            });
 
-            // Eliminar la sala si está vacía
+            // Notificar a otros participantes
+            socket.to(salaId).emit('user-left', { 
+                socketId: socket.id 
+            });
+
+            // Limpiar sala si no hay participantes
             if (room.participants.size === 0) {
-                console.log(`Sala ${salaId} cerrada por falta de participantes`);
                 rooms.delete(salaId);
+                logger.info(`Sala ${salaId} eliminada por falta de participantes`);
             }
         }
     });
