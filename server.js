@@ -126,6 +126,17 @@ io.on("connection", (socket) => {
             return;
         }
 
+        // Verificar si el usuario ya está en la sala
+        const existingParticipant = Array.from(room.participants.values())
+            .find(p => p.userId === userId);
+
+        if (existingParticipant) {
+            // Si el usuario ya está en la sala, actualizar su socket
+            const oldSocketId = existingParticipant.socketId;
+            room.participants.delete(oldSocketId);
+            logger.info(`Usuario reconectado: ${userId} (socket antiguo: ${oldSocketId}, nuevo: ${socket.id})`);
+        }
+
         // Unir socket a la sala
         socket.join(roomId);
         socket.roomId = roomId;
