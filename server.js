@@ -126,201 +126,177 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Generar un ID único para este usuario en esta sala
-        let uniqueUserId = generateUniqueUserId(userId, userRole);
-        
-        // Verificar si este socket ya está en la sala
-        const isSocketDuplicate = Array.from(room.participants.values())
-            .some(p => p.userId === userId && p.userRole === userRole);
-        
-        if (isSocketDuplicate) {
-            logger.warn(`Usuario duplicado intentando unirse a sala ${roomId}`);
-            socket.emit('room-error', { 
-                message: 'Ya estás conectado a esta sala' 
-            });
-            return;
-        }
-
-        // Agregar participante con información detallada
-        room.participants.set(socket.id, {
-            userId,
-            userName,
-            userRole,
-            uniqueUserId,
-            joinedAt: new Date(),
-            socketId: socket.id,
-            metadata: {
-                ipAddress: socket.handshake.address,
-                userAgent: socket.handshake.headers['user-agent']
-            }
-        });
-
         // Unir socket a la sala
         socket.join(roomId);
         socket.roomId = roomId;
 
-        logger.info(`Usuario unido a sala ${roomId}`, { 
-            socketId: socket.id, 
-            participantCount: room.participants.size,
-            uniqueUserId
-        });
-
-        // Notificar al usuario que se unió exitosamente
-        socket.emit('room-joined', {
-            roomId,
+        // Agregar participante
+        room.participants.set(socket.id, {
             userId,
-            uniqueUserId,
             userName,
             userRole,
-            participants: Array.from(room.participants.values()).map(p => ({
-                userId: p.userId,
-                uniqueUserId: p.uniqueUserId,
-                userName: p.userName,
-                userRole: p.userRole
-            }))
+            joinedAt: new Date(),
+            socketId: socket.id
+        });
+
+        logger.info(`Usuario unido a sala ${roomId}`, { 
+            socketId: socket.id, 
+            participantCount: room.participants.size
         });
 
         // Notificar a otros participantes
-        socket.to(roomId).emit('user-connected', {
+        socket.to(roomId).emit('user-joined', {
             userId,
-            uniqueUserId,
             userName,
             userRole
         });
 
         // Enviar lista de usuarios actuales al nuevo participante
-        socket.emit('room-users', Array.from(room.participants.values())
+        const otherParticipants = Array.from(room.participants.values())
             .filter(p => p.socketId !== socket.id)
             .map(p => ({
                 userId: p.userId,
-                uniqueUserId: p.uniqueUserId,
                 userName: p.userName,
                 userRole: p.userRole
-            }))
-        );
-
-        // Notificar si alguien está compartiendo pantalla
-        if (room.screenSharing) {
-            socket.emit('screen-sharing-started', {
-                userId: room.screenSharing.userId,
-                userName: room.screenSharing.userName
-            });
-        }
+            }));
+            
+        socket.emit('room-users', otherParticipants);
     });
 
-    // Manejo de señalización WebRTC
-    socket.on('offer', ({ to, offer }) => {
+    // Manejar oferta WebRTC
+    socket.on('offer', (data) => {
+        logger.debug('Oferta recibida', { 
+            from: socket.id, 
+            to: data.to 
+        });
+
         const room = rooms.get(socket.roomId);
         if (!room) {
-            logger.error(`Error: Usuario ${socket.id} intentó enviar oferta pero no está en una sala válida`);
+            logger.warn('Sala no encontrada para oferta', { roomId: socket.roomId });
             return;
         }
 
-        const fromParticipant = room.participants.get(socket.id);
-        if (!fromParticipant) {
-            logger.error(`Error: No se encontró información del participante ${socket.id}`);
+        const sender = room.participants.get(socket.id);
+        if (!sender) {
+            logger.warn('Remitente no encontrado para oferta', { socketId: socket.id });
             return;
         }
 
-        logger.info(`Oferta enviada de ${fromParticipant.userName} a ${to}`);
-
-        // Encontrar el socket ID del destinatario por uniqueUserId o userId
-        const toParticipant = Array.from(room.participants.entries())
-            .find(([_, p]) => p.uniqueUserId === to || p.userId === to);
-
-        if (!toParticipant) {
-            logger.error(`Error: No se encontró el destinatario ${to}`);
-            return;
-        }
-
-        io.to(toParticipant[0]).emit('offer', {
-            from: fromParticipant.uniqueUserId || fromParticipant.userId,
-            offer
+        socket.to(data.to).emit('offer', {
+            offer: data.offer,
+            from: sender.userId,
+            userName: sender.userName,
+            userRole: sender.userRole
         });
     });
 
-    socket.on('answer', ({ to, answer }) => {
+    // Manejar respuesta WebRTC
+    socket.on('answer', (data) => {
+        logger.debug('Respuesta recibida', { 
+            from: socket.id, 
+            to: data.to 
+        });
+
         const room = rooms.get(socket.roomId);
         if (!room) {
-            logger.error(`Error: Usuario ${socket.id} intentó enviar respuesta pero no está en una sala válida`);
+            logger.warn('Sala no encontrada para respuesta', { roomId: socket.roomId });
             return;
         }
 
-        const fromParticipant = room.participants.get(socket.id);
-        if (!fromParticipant) {
-            logger.error(`Error: No se encontró información del participante ${socket.id}`);
+        const sender = room.participants.get(socket.id);
+        if (!sender) {
+            logger.warn('Remitente no encontrado para respuesta', { socketId: socket.id });
             return;
         }
 
-        logger.info(`Respuesta enviada de ${fromParticipant.userName} a ${to}`);
-
-        // Encontrar el socket ID del destinatario por uniqueUserId o userId
-        const toParticipant = Array.from(room.participants.entries())
-            .find(([_, p]) => p.uniqueUserId === to || p.userId === to);
-
-        if (!toParticipant) {
-            logger.error(`Error: No se encontró el destinatario ${to}`);
-            return;
-        }
-
-        io.to(toParticipant[0]).emit('answer', {
-            from: fromParticipant.uniqueUserId || fromParticipant.userId,
-            answer
+        socket.to(data.to).emit('answer', {
+            answer: data.answer,
+            from: sender.userId
         });
     });
 
-    socket.on('ice-candidate', ({ to, candidate }) => {
+    // Manejar candidato ICE
+    socket.on('ice-candidate', (data) => {
+        logger.debug('Candidato ICE recibido', { 
+            from: socket.id, 
+            to: data.to 
+        });
+
         const room = rooms.get(socket.roomId);
         if (!room) {
-            logger.error(`Error: Usuario ${socket.id} intentó enviar ICE candidate pero no está en una sala válida`);
+            logger.warn('Sala no encontrada para candidato ICE', { roomId: socket.roomId });
             return;
         }
 
-        const fromParticipant = room.participants.get(socket.id);
-        if (!fromParticipant) {
-            logger.error(`Error: No se encontró información del participante ${socket.id}`);
+        const sender = room.participants.get(socket.id);
+        if (!sender) {
+            logger.warn('Remitente no encontrado para candidato ICE', { socketId: socket.id });
             return;
         }
 
-        logger.info(`ICE candidate enviado de ${fromParticipant.userName} a ${to}`);
-
-        // Encontrar el socket ID del destinatario por uniqueUserId o userId
-        const toParticipant = Array.from(room.participants.entries())
-            .find(([_, p]) => p.uniqueUserId === to || p.userId === to);
-
-        if (!toParticipant) {
-            logger.error(`Error: No se encontró el destinatario ${to}`);
-            return;
-        }
-
-        io.to(toParticipant[0]).emit('ice-candidate', {
-            from: fromParticipant.uniqueUserId || fromParticipant.userId,
-            candidate
+        socket.to(data.to).emit('ice-candidate', {
+            candidate: data.candidate,
+            from: sender.userId
         });
     });
 
-    // Chat en tiempo real
-    socket.on('send-chat-message', message => {
+    // Manejar desconexión
+    socket.on('disconnect', () => {
+        logger.info('Usuario desconectado', { socketId: socket.id });
+
         const room = rooms.get(socket.roomId);
-        if (!room) return;
+        if (room) {
+            const participant = room.participants.get(socket.id);
+            if (participant) {
+                room.participants.delete(socket.id);
+                
+                socket.to(socket.roomId).emit('user-left', {
+                    userId: participant.userId
+                });
 
-        const participant = room.participants.get(socket.id);
-        if (!participant) return;
+                logger.info(`Usuario removido de sala ${socket.roomId}`, {
+                    socketId: socket.id,
+                    remainingParticipants: room.participants.size
+                });
 
-        const messageData = {
-            id: Date.now(),
-            text: message.text,
-            sender: participant.userName,
-            senderId: socket.id, 
-            userId: participant.userId,
-            timestamp: new Date().toISOString()
+                // Eliminar sala si está vacía
+                if (room.participants.size === 0) {
+                    rooms.delete(socket.roomId);
+                    logger.info(`Sala ${socket.roomId} eliminada`);
+                }
+            }
+        }
+    });
+
+    // Manejar mensajes de chat
+    socket.on('chat-message', (data) => {
+        logger.debug('Mensaje de chat recibido', { 
+            from: socket.id, 
+            roomId: socket.roomId 
+        });
+
+        const room = rooms.get(socket.roomId);
+        if (!room) {
+            logger.warn('Sala no encontrada para mensaje de chat', { roomId: socket.roomId });
+            return;
+        }
+
+        const sender = room.participants.get(socket.id);
+        if (!sender) {
+            logger.warn('Remitente no encontrado para mensaje de chat', { socketId: socket.id });
+            return;
+        }
+
+        const message = {
+            userId: sender.userId,
+            userName: sender.userName,
+            message: data.message,
+            timestamp: new Date()
         };
+
+        room.messages.push(message);
         
-        room.messages.push(messageData);
-        logger.info(`Mensaje de chat de ${participant.userName} en sala ${socket.roomId}: ${message.text}`);
-        
-        // Enviar a todos los participantes de la sala
-        io.to(socket.roomId).emit('chat-message', messageData);
+        socket.to(socket.roomId).emit('chat-message', message);
     });
 
     // Control de audio/video
@@ -601,33 +577,6 @@ io.on("connection", (socket) => {
         // Enviar a todos los participantes de la sala
         io.to(socket.roomId).emit('notification', notificationData);
     });
-
-    // Manejo de desconexión
-    socket.on('disconnect', () => {
-        logger.info(`Usuario desconectado: ${socket.id}`);
-        
-        const roomId = socket.roomId;
-        if (!roomId) return;
-
-        const room = rooms.get(roomId);
-        if (!room) return;
-
-        const participant = room.participants.get(socket.id);
-        if (!participant) return;
-
-        // Eliminar participante
-        room.participants.delete(socket.id);
-        logger.info(`Participante eliminado de la sala ${roomId}`);
-
-        // Notificar a otros participantes usando el ID único si está disponible
-        socket.to(roomId).emit('user-left', participant.uniqueUserId || participant.userId);
-
-        // Si la sala está vacía, eliminarla
-        if (room.participants.size === 0) {
-            rooms.delete(roomId);
-            logger.info(`Sala ${roomId} eliminada por estar vacía`);
-        }
-    });
 });
 
 // Eventos para el namespace de tiempo real
@@ -741,3 +690,4 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
     console.log(`Escuchando en todas las interfaces de red`);
 });
+
