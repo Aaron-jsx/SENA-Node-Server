@@ -32,6 +32,9 @@ const rooms = new Map();
 // Mapa para almacenar notificaciones pendientes
 const pendingNotifications = new Map();
 
+// Mapa para almacenar sesiones activas
+const activeSessions = new Map();
+
 // Función para generar un ID único para cada usuario
 function generateUniqueUserId(userId, userRole) {
     // Combinar ID de usuario, rol y un timestamp para garantizar unicidad
@@ -77,34 +80,81 @@ realTimeNamespace.use((socket, next) => {
     next();
 });
 
-io.on("connection", (socket) => {
-    const { userId, userName, userRole, roomId } = socket.handshake.query;
-    
-    // Generar ID único para este usuario
-    const uniqueUserId = generateUniqueUserId(userId, userRole);
+// Función para verificar si un usuario ya está conectado
+function isUserConnected(userId, roomId) {
+    const sessionKey = `${userId}_${roomId}`;
+    return activeSessions.has(sessionKey);
+}
 
-    logger.info('Nueva conexión de socket principal', { 
+// Función para registrar una sesión activa
+function registerSession(userId, roomId, socketId) {
+    const sessionKey = `${userId}_${roomId}`;
+    activeSessions.set(sessionKey, {
+        socketId,
+        timestamp: Date.now(),
+        reconnectAttempts: 0
+    });
+}
+
+// Función para eliminar una sesión
+function removeSession(userId, roomId) {
+    const sessionKey = `${userId}_${roomId}`;
+    activeSessions.delete(sessionKey);
+}
+
+// Función para limpiar sesiones antiguas
+function cleanupOldSessions() {
+    const now = Date.now();
+    const timeout = 5 * 60 * 1000; // 5 minutos
+
+    activeSessions.forEach((session, key) => {
+        if (now - session.timestamp > timeout) {
+            activeSessions.delete(key);
+            logger.info(`Sesión antigua eliminada: ${key}`);
+        }
+    });
+}
+
+// Limpiar sesiones antiguas cada 5 minutos
+setInterval(cleanupOldSessions, 5 * 60 * 1000);
+
+io.on("connection", (socket) => {
+    const { userId, userName, userRole, salaId } = socket.handshake.query;
+    
+    logger.info('Nueva conexión de socket', { 
         socketId: socket.id, 
         userId, 
         userName, 
         userRole, 
-        roomId,
-        uniqueUserId
+        salaId 
     });
 
+    // Verificar si el usuario ya está conectado
+    if (isUserConnected(userId, salaId)) {
+        logger.warn('Usuario duplicado detectado', { userId, salaId });
+        socket.emit('duplicate_user');
+        socket.disconnect();
+        return;
+    }
+
+    // Registrar la nueva sesión
+    registerSession(userId, salaId, socket.id);
+
     // Unirse a una sala
-    socket.on("join-room", ({ roomId, userId, userName, userRole }) => {
+    socket.on("join-room", (data) => {
+        const { salaId, userId, userName, userRole } = data;
+        
         logger.debug('Intento de unión a sala', { 
             socketId: socket.id, 
-            roomId, 
+            salaId, 
             userId, 
             userName, 
             userRole 
         });
 
         // Crear la sala si no existe
-        if (!rooms.has(roomId)) {
-            rooms.set(roomId, {
+        if (!rooms.has(salaId)) {
+            rooms.set(salaId, {
                 participants: new Map(),
                 createdAt: new Date(),
                 messages: [],
@@ -112,17 +162,15 @@ io.on("connection", (socket) => {
                 notifications: [],
                 screenSharing: null
             });
-            logger.info(`Sala ${roomId} creada`);
+            logger.info(`Sala ${salaId} creada`);
         }
 
-        const room = rooms.get(roomId);
+        const room = rooms.get(salaId);
         
         // Verificar límite de participantes
         if (room.participants.size >= 20) {
-            logger.warn(`Sala ${roomId} llena. No se permiten más participantes.`);
-            socket.emit('room-full', { 
-                message: 'La sala ya tiene el máximo de participantes permitidos' 
-            });
+            logger.warn(`Sala ${salaId} llena`);
+            socket.emit('room-full');
             return;
         }
 
@@ -131,15 +179,24 @@ io.on("connection", (socket) => {
             .find(p => p.userId === userId);
 
         if (existingParticipant) {
-            // Si el usuario ya está en la sala, actualizar su socket
+            // Manejar reconexión
             const oldSocketId = existingParticipant.socketId;
+            
+            // Notificar al socket antiguo
+            io.to(oldSocketId).emit('session-expired');
+            
+            // Eliminar participante antiguo
             room.participants.delete(oldSocketId);
-            logger.info(`Usuario reconectado: ${userId} (socket antiguo: ${oldSocketId}, nuevo: ${socket.id})`);
+            
+            logger.info(`Usuario reconectado: ${userId}`, {
+                oldSocket: oldSocketId,
+                newSocket: socket.id
+            });
         }
 
         // Unir socket a la sala
-        socket.join(roomId);
-        socket.roomId = roomId;
+        socket.join(salaId);
+        socket.salaId = salaId;
 
         // Agregar participante
         room.participants.set(socket.id, {
@@ -150,20 +207,15 @@ io.on("connection", (socket) => {
             socketId: socket.id
         });
 
-        logger.info(`Usuario unido a sala ${roomId}`, { 
-            socketId: socket.id, 
-            participantCount: room.participants.size
-        });
-
         // Notificar a otros participantes
-        socket.to(roomId).emit('user-joined', {
+        socket.to(salaId).emit('user-joined', {
             userId,
             userName,
             userRole
         });
 
-        // Enviar lista de usuarios actuales al nuevo participante
-        const otherParticipants = Array.from(room.participants.values())
+        // Enviar lista de participantes actuales
+        const participants = Array.from(room.participants.values())
             .filter(p => p.socketId !== socket.id)
             .map(p => ({
                 userId: p.userId,
@@ -171,7 +223,41 @@ io.on("connection", (socket) => {
                 userRole: p.userRole
             }));
             
-        socket.emit('room-users', otherParticipants);
+        socket.emit('room-users', participants);
+    });
+
+    // Manejar desconexión
+    socket.on('disconnect', () => {
+        const salaId = socket.salaId;
+        
+        if (salaId && rooms.has(salaId)) {
+            const room = rooms.get(salaId);
+            const participant = room.participants.get(socket.id);
+            
+            if (participant) {
+                // Eliminar participante de la sala
+                room.participants.delete(socket.id);
+                
+                // Notificar a otros participantes
+                socket.to(salaId).emit('user-left', {
+                    userId: participant.userId
+                });
+
+                // Eliminar la sesión
+                removeSession(participant.userId, salaId);
+                
+                logger.info(`Usuario desconectado: ${participant.userId}`, {
+                    salaId,
+                    remainingParticipants: room.participants.size
+                });
+
+                // Limpiar sala si está vacía
+                if (room.participants.size === 0) {
+                    rooms.delete(salaId);
+                    logger.info(`Sala eliminada: ${salaId}`);
+                }
+            }
+        }
     });
 
     // Manejar oferta WebRTC
@@ -181,9 +267,9 @@ io.on("connection", (socket) => {
             to: data.to 
         });
 
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) {
-            logger.warn('Sala no encontrada para oferta', { roomId: socket.roomId });
+            logger.warn('Sala no encontrada para oferta', { roomId: socket.salaId });
             return;
         }
 
@@ -208,9 +294,9 @@ io.on("connection", (socket) => {
             to: data.to 
         });
 
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) {
-            logger.warn('Sala no encontrada para respuesta', { roomId: socket.roomId });
+            logger.warn('Sala no encontrada para respuesta', { roomId: socket.salaId });
             return;
         }
 
@@ -233,9 +319,9 @@ io.on("connection", (socket) => {
             to: data.to 
         });
 
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) {
-            logger.warn('Sala no encontrada para candidato ICE', { roomId: socket.roomId });
+            logger.warn('Sala no encontrada para candidato ICE', { roomId: socket.salaId });
             return;
         }
 
@@ -251,44 +337,16 @@ io.on("connection", (socket) => {
         });
     });
 
-    // Manejar desconexión
-    socket.on('disconnect', () => {
-        logger.info('Usuario desconectado', { socketId: socket.id });
-
-        const room = rooms.get(socket.roomId);
-        if (room) {
-            const participant = room.participants.get(socket.id);
-            if (participant) {
-                room.participants.delete(socket.id);
-                
-                socket.to(socket.roomId).emit('user-left', {
-                    userId: participant.userId
-                });
-
-                logger.info(`Usuario removido de sala ${socket.roomId}`, {
-                    socketId: socket.id,
-                    remainingParticipants: room.participants.size
-                });
-
-                // Eliminar sala si está vacía
-                if (room.participants.size === 0) {
-                    rooms.delete(socket.roomId);
-                    logger.info(`Sala ${socket.roomId} eliminada`);
-                }
-            }
-        }
-    });
-
     // Manejar mensajes de chat
     socket.on('chat-message', (data) => {
         logger.debug('Mensaje de chat recibido', { 
             from: socket.id, 
-            roomId: socket.roomId 
+            roomId: socket.salaId 
         });
 
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) {
-            logger.warn('Sala no encontrada para mensaje de chat', { roomId: socket.roomId });
+            logger.warn('Sala no encontrada para mensaje de chat', { roomId: socket.salaId });
             return;
         }
 
@@ -307,18 +365,18 @@ io.on("connection", (socket) => {
 
         room.messages.push(message);
         
-        socket.to(socket.roomId).emit('chat-message', message);
+        socket.to(socket.salaId).emit('chat-message', message);
     });
 
     // Control de audio/video
     socket.on('toggle-audio', (isEnabled) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isAudioEnabled = isEnabled;
-            io.to(socket.roomId).emit('participant-audio-changed', {
+            io.to(socket.salaId).emit('participant-audio-changed', {
                 participantId: socket.id,
                 isEnabled
             });
@@ -326,13 +384,13 @@ io.on("connection", (socket) => {
     });
     
     socket.on('toggle-video', (isEnabled) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
         
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isVideoEnabled = isEnabled;
-            io.to(socket.roomId).emit('participant-video-changed', {
+            io.to(socket.salaId).emit('participant-video-changed', {
                 participantId: socket.id,
                 isEnabled
             });
@@ -341,13 +399,13 @@ io.on("connection", (socket) => {
     
     // Levantar la mano
     socket.on('raise-hand', (isRaised) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.raisedHand = isRaised;
-            io.to(socket.roomId).emit('hand-raised', {
+            io.to(socket.salaId).emit('hand-raised', {
                 participantId: socket.id,
                 userName: participant.userName,
                 isRaised
@@ -357,19 +415,19 @@ io.on("connection", (socket) => {
 
     // Agregar eventos para compartir pantalla
     socket.on('screen-sharing-started', () => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isScreenSharing = true;
-            io.to(socket.roomId).emit('participant-screen-sharing', {
+            io.to(socket.salaId).emit('participant-screen-sharing', {
                 participantId: socket.id,
                 userId: participant.userId,
                 userName: participant.userName,
                 isSharing: true
             });
-            logger.info(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.roomId}`);
+            logger.info(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.salaId}`);
 
             // Guardar información de quién está compartiendo pantalla
             room.screenSharing = {
@@ -381,23 +439,23 @@ io.on("connection", (socket) => {
     });
 
     socket.on('screen-sharing-stopped', () => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
         if (participant) {
             participant.isScreenSharing = false;
-            io.to(socket.roomId).emit('participant-screen-sharing', {
+            io.to(socket.salaId).emit('participant-screen-sharing', {
                 participantId: socket.id,
                 userId: participant.userId,
                 userName: participant.userName,
                 isSharing: false
             });
-            logger.info(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.roomId}`);
+            logger.info(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.salaId}`);
 
             // Verificar si este usuario es quien estaba compartiendo pantalla
             if (room.screenSharing && room.screenSharing.socketId === socket.id) {
-                logger.info(`Usuario ${participant.userName} detuvo compartir pantalla en sala ${socket.roomId}`);
+                logger.info(`Usuario ${participant.userName} detuvo compartir pantalla en sala ${socket.salaId}`);
                 
                 // Limpiar información de compartir pantalla
                 room.screenSharing = null;
@@ -407,7 +465,7 @@ io.on("connection", (socket) => {
 
     // Eventos para manejar encuestas
     socket.on('create-poll', (pollData) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -429,14 +487,14 @@ io.on("connection", (socket) => {
 
         // Guardar la encuesta en la sala
         room.polls.push(poll);
-        logger.info(`Encuesta creada por ${participant.userName} en sala ${socket.roomId}: ${poll.question}`);
+        logger.info(`Encuesta creada por ${participant.userName} en sala ${socket.salaId}: ${poll.question}`);
         
         // Notificar a todos los participantes
-        io.to(socket.roomId).emit('poll-created', poll);
+        io.to(socket.salaId).emit('poll-created', poll);
     });
 
     socket.on('get-active-polls', () => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         // Filtrar encuestas activas
@@ -447,7 +505,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on('vote-poll', ({ pollId, optionIndex }) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -481,11 +539,11 @@ io.on("connection", (socket) => {
         room.polls[pollIndex] = poll;
         
         // Notificar a todos los participantes
-        io.to(socket.roomId).emit('poll-updated', poll);
+        io.to(socket.salaId).emit('poll-updated', poll);
     });
 
     socket.on('close-poll', ({ pollId }) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -507,11 +565,11 @@ io.on("connection", (socket) => {
         logger.info(`Encuesta ${pollId} cerrada por ${participant.userName}`);
         
         // Notificar a todos los participantes
-        io.to(socket.roomId).emit('poll-closed', { pollId });
+        io.to(socket.salaId).emit('poll-closed', { pollId });
     });
 
     socket.on('get-chat-history', () => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         // Enviar los últimos 50 mensajes
@@ -521,7 +579,7 @@ io.on("connection", (socket) => {
 
     // Eventos para notificaciones en tiempo real
     socket.on('send-notification', ({ userId, notification }) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -561,7 +619,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on('broadcast-notification', ({ notification }) => {
-        const room = rooms.get(socket.roomId);
+        const room = rooms.get(socket.salaId);
         if (!room) return;
 
         const participant = room.participants.get(socket.id);
@@ -586,7 +644,7 @@ io.on("connection", (socket) => {
         room.notifications.push(notificationData);
 
         // Enviar a todos los participantes de la sala
-        io.to(socket.roomId).emit('notification', notificationData);
+        io.to(socket.salaId).emit('notification', notificationData);
     });
 });
 
@@ -701,4 +759,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
     console.log(`Escuchando en todas las interfaces de red`);
 });
+
 
