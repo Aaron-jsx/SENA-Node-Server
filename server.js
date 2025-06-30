@@ -20,10 +20,28 @@ const PORT = process.env.PORT || 10000;
 
 // Configuración de CORS para Express
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    // Permitir solicitudes desde cualquier origen en desarrollo
+    const allowedOrigins = [
+        'https://tu-dominio-de-produccion.com',
+        'http://localhost',
+        'http://127.0.0.1',
+        'https://sena-videocall.000webhostapp.com'
+    ];
+    
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.header('Access-Control-Allow-Origin', origin);
+    }
+    
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    next();
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+    } else {
+        next();
+    }
 });
 
 // Dentro de la definición de rooms, agregar polls para almacenar encuestas
@@ -63,22 +81,63 @@ const logger = winston.createLogger({
 // Crear namespace para actualizaciones en tiempo real
 const realTimeNamespace = io.of('/realtime');
 
-// Middleware de logging global
+// Middleware para verificar la autenticación
 io.use((socket, next) => {
-    logger.info('Socket middleware - Nueva conexión', { 
-        socketId: socket.id,
-        handshake: socket.handshake.query
+    const { userId, userName, userRole, salaId } = socket.handshake.query;
+    
+    if (!userId || !userName || !userRole || !salaId) {
+        logger.warn('Conexión rechazada - Faltan datos de autenticación', {
+            userId,
+            userName,
+            userRole,
+            salaId
+        });
+        next(new Error('Autenticación requerida'));
+        return;
+    }
+
+    // Verificar si el usuario ya está conectado
+    if (isUserConnected(userId, salaId)) {
+        const existingSocket = findSocketByUserId(userId, salaId);
+        if (existingSocket) {
+            // Desconectar socket anterior
+            existingSocket.disconnect(true);
+            logger.info('Socket anterior desconectado', {
+                userId,
+                oldSocketId: existingSocket.id
+            });
+        }
+    }
+
+    // Agregar información de autenticación al socket
+    socket.userId = userId;
+    socket.userName = userName;
+    socket.userRole = userRole;
+    socket.salaId = salaId;
+
+    logger.info('Usuario autenticado correctamente', {
+        userId,
+        userName,
+        userRole,
+        salaId,
+        socketId: socket.id
     });
+
     next();
 });
 
-realTimeNamespace.use((socket, next) => {
-    logger.info('RealTime namespace middleware - Nueva conexión', { 
-        socketId: socket.id,
-        handshake: socket.handshake.query
-    });
-    next();
-});
+// Función para encontrar un socket por userId
+function findSocketByUserId(userId, salaId) {
+    const room = rooms.get(salaId);
+    if (!room) return null;
+
+    for (const [socketId, participant] of room.participants) {
+        if (participant.userId === userId) {
+            return io.sockets.sockets.get(socketId);
+        }
+    }
+    return null;
+}
 
 // Función para verificar si un usuario ya está conectado
 function isUserConnected(userId, roomId) {
