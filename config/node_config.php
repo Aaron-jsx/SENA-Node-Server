@@ -4,6 +4,25 @@
  * Este archivo centraliza la configuración del servidor Node.js
  */
 
+// Configuración del servidor Node.js
+$config = [
+    'signalingServer' => 'https://sena-node-server.onrender.com',
+    'allowedOrigins' => [
+        'https://sena-videocall.000webhostapp.com',
+        'http://localhost',
+        'http://127.0.0.1'
+    ],
+    'socketOptions' => [
+        'forceNew' => true,
+        'reconnection' => true,
+        'reconnectionAttempts' => 3,
+        'reconnectionDelay' => 1000,
+        'timeout' => 10000,
+        'autoConnect' => false,
+        'transports' => ['websocket']
+    ]
+];
+
 // URL del servidor Node.js en Render
 // Cambiar esta URL cuando se suba el servidor Node.js a producción
 define('NODE_SERVER_URL', 'https://tuserver.onrender.com');
@@ -71,5 +90,32 @@ function logNodeEvent($message, $level = 'info') {
  */
 function isNodeIntegrationEnabled() {
     return defined('NODE_SERVER_URL') && !empty(NODE_SERVER_URL);
+}
+
+// Función para obtener la URL del servidor de señalización
+function getSignalingServerUrl() {
+    global $config;
+    return $config['signalingServer'];
+}
+
+// Función para obtener las opciones de Socket.IO
+function getSocketOptions() {
+    global $config;
+    return json_encode($config['socketOptions']);
+}
+
+// Función para verificar si el origen está permitido
+function isOriginAllowed($origin) {
+    global $config;
+    return in_array($origin, $config['allowedOrigins']);
+}
+
+// Función para obtener la configuración del cliente
+function getClientConfig() {
+    global $config;
+    return [
+        'signalingServer' => $config['signalingServer'],
+        'socketOptions' => $config['socketOptions']
+    ];
 }
 ?> 
