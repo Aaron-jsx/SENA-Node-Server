@@ -78,9 +78,13 @@ io.on("connection", (socket) => {
     
     logger.info('Nueva conexión de socket', { socketId: socket.id, userId, salaId });
 
-    // --- LÓGICA CORREGIDA ---
-    // Ya no se verifica si el usuario es duplicado aquí.
-    // Se permite la conexión y se maneja por socket.id, que siempre es único.
+    // ===================================================================
+    // --- LÓGICA CORREGIDA Y DEFINITIVA ---
+    // La verificación de 'Usuario duplicado' ha sido ELIMINADA.
+    // Ahora, cada conexión es única gracias a su 'socket.id', permitiendo
+    // que diferentes usuarios (aprendiz/instructor) con el mismo userId
+    // puedan entrar a la misma sala sin ser bloqueados.
+    // ===================================================================
 
     // Crear sala si no existe
     if (!rooms.has(salaId)) {
