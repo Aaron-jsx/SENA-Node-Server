@@ -10,7 +10,7 @@ const server = http.createServer(app);
 // --- CONFIGURACIÓN DE CORS CORRECTA ---
 const allowedOrigins = [
     'https://lasena.byethost31.com', // Tu dominio de producción
-    'https://sena-videocall.000webhostapp.com', // Otro dominio que tenías
+    'https://sena-videocall.000webhostapp.com',
     'http://localhost',
     'http://127.0.0.1'
 ];
@@ -27,10 +27,10 @@ const corsOptions = {
   credentials: true
 };
 
-app.use(cors(corsOptions)); // Usa el middleware de CORS para Express
+app.use(cors(corsOptions));
 
 const io = new socketIo.Server(server, {
-    cors: corsOptions, // Aplica la misma configuración a Socket.IO
+    cors: corsOptions,
     transports: ['websocket', 'polling'],
     pingTimeout: 60000,
     pingInterval: 25000
@@ -38,14 +38,7 @@ const io = new socketIo.Server(server, {
 
 const PORT = process.env.PORT || 10000;
 
-// El resto de tu lógica de servidor...
 const rooms = new Map();
-const pendingNotifications = new Map();
-const activeSessions = new Map();
-
-function generateUniqueUserId(userId, userRole) {
-    return `${userId}_${userRole}_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-}
 
 const logger = winston.createLogger({
     level: 'debug',
@@ -59,22 +52,19 @@ const logger = winston.createLogger({
             return msg;
         })
     ),
-    transports: [
-        new winston.transports.Console(),
-        new winston.transports.File({ filename: 'server.log' })
-    ]
+    transports: [ new winston.transports.Console() ]
 });
 
+// Middleware de autenticación para Socket.IO
 io.use((socket, next) => {
     const { userId, userName, userRole, salaId } = socket.handshake.query;
     
     if (!userId || !userName || !userRole || !salaId) {
-        logger.warn('Conexión rechazada - Faltan datos de autenticación', {
-            query: socket.handshake.query
-        });
+        logger.warn('Conexión rechazada - Faltan datos de autenticación', { query: socket.handshake.query });
         return next(new Error('Autenticación requerida'));
     }
 
+    // Adjuntar datos al objeto socket para uso futuro
     socket.userId = userId;
     socket.userName = userName;
     socket.userRole = userRole;
@@ -88,40 +78,36 @@ io.on("connection", (socket) => {
     
     logger.info('Nueva conexión de socket', { socketId: socket.id, userId, salaId });
 
+    // --- LÓGICA CORREGIDA ---
+    // Ya no se verifica si el usuario es duplicado aquí.
+    // Se permite la conexión y se maneja por socket.id, que siempre es único.
+
+    // Crear sala si no existe
     if (!rooms.has(salaId)) {
-        rooms.set(salaId, {
-            participants: new Map(),
-            createdAt: new Date(),
-            messages: [],
-            polls: [],
-            notifications: [],
-            screenSharing: null
-        });
+        rooms.set(salaId, { participants: new Map() });
         logger.info(`Sala ${salaId} creada`);
     }
 
     const room = rooms.get(salaId);
 
+    // Unir el socket a la sala
     socket.join(salaId);
 
-    room.participants.set(socket.id, {
-        userId,
-        userName,
-        userRole,
-        joinedAt: new Date(),
-        socketId: socket.id
-    });
+    // Añadir participante a la lista de la sala usando el socket.id como clave única
+    room.participants.set(socket.id, { userId, userName, userRole, socketId: socket.id });
 
-    const otherParticipants = Array.from(room.participants.values())
-        .filter(p => p.socketId !== socket.id);
-
+    // Enviar al nuevo usuario la lista de los que ya estaban
+    const otherParticipants = Array.from(room.participants.values()).filter(p => p.socketId !== socket.id);
     socket.emit('room-users', otherParticipants);
-
+    
+    // Enviar a los demás la info del nuevo usuario
     socket.to(salaId).emit('user-joined', { userId, userName, userRole, socketId: socket.id });
 
+    // Manejar desconexión
     socket.on('disconnect', () => {
-        if (room) {
+        if (room && room.participants.has(socket.id)) {
             room.participants.delete(socket.id);
+            // Notificar a los demás que el usuario se fue
             socket.to(salaId).emit('user-left', { socketId: socket.id });
             logger.info(`Usuario desconectado: ${userId} de la sala ${salaId}`);
             if (room.participants.size === 0) {
@@ -131,6 +117,7 @@ io.on("connection", (socket) => {
         }
     });
 
+    // --- MANEJO DE WEBRTC ---
     socket.on('offer', (data) => {
         socket.to(data.to).emit('offer', {
             offer: data.offer,
@@ -152,13 +139,19 @@ io.on("connection", (socket) => {
         });
     });
 
-    // ... (El resto de tus eventos de socket como chat, etc. van aquí) ...
+    // --- MANEJO DE CHAT ---
+    socket.on('chat-message', (messageData) => {
+        // Re-transmitir el mensaje a todos en la sala, incluido el remitente
+        io.to(salaId).emit('chat-message', messageData);
+    });
 });
 
+// Rutas de prueba para Express
 app.get('/', (req, res) => {
     res.send({ status: 'ok', message: 'Servidor de señalización SENA funcionando' });
 });
 
+// Iniciar el servidor
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor de videollamadas iniciado en el puerto ${PORT}`);
 });
