@@ -1,3 +1,7 @@
+// VERSIÓN DEFINITIVA - 3 de Julio - SIN ERROR DE DUPLICADOS
+
+const express = require('express');
+// ... y el resto de tu código ...
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
