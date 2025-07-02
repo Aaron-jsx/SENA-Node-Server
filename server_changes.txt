@@ -1,0 +1,216 @@
+INSTRUCCIONES PARA ACTUALIZAR EL SERVIDOR DE RENDER
+
+1. Accede a tu panel de control en Render.com y navega hasta tu servicio de WebSocket.
+
+2. En la sección de "Shell", ejecuta los siguientes comandos para editar el archivo server.js:
+
+```
+cd /opt/render/project/src
+nano server.js
+```
+
+3. Realiza los siguientes cambios en el archivo server.js:
+
+a) Modifica la definición de rooms para incluir el array de encuestas:
+```javascript
+// Busca esta línea:
+const rooms = new Map();
+
+// Si existe la parte donde se crea una nueva sala, asegúrate de que incluya polls:
+if (!rooms.has(salaId)) {
+    rooms.set(salaId, {
+        participants: new Map(),
+        createdAt: new Date(),
+        messages: [],
+        polls: [] // Agregar array para almacenar encuestas
+    });
+}
+```
+
+b) Agrega los eventos para manejar encuestas después de los eventos existentes:
+```javascript
+// Eventos para manejar encuestas
+socket.on('create-poll', (pollData) => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    // Solo los instructores pueden crear encuestas
+    if (participant.userType !== 'instructor') {
+        console.log(`Usuario ${participant.userName} intentó crear una encuesta sin ser instructor`);
+        return;
+    }
+
+    // Agregar información adicional a la encuesta
+    const poll = {
+        ...pollData,
+        createdAt: new Date(),
+        active: true,
+        voters: []
+    };
+
+    // Guardar la encuesta en la sala
+    room.polls.push(poll);
+    console.log(`Encuesta creada por ${participant.userName} en sala ${socket.salaId}: ${poll.question}`);
+
+    // Notificar a todos los participantes
+    io.to(socket.salaId).emit('poll-created', poll);
+});
+
+socket.on('get-active-polls', () => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    // Filtrar encuestas activas
+    const activePolls = room.polls.filter(poll => poll.active);
+    
+    // Enviar encuestas activas al solicitante
+    socket.emit('active-polls', activePolls);
+});
+
+socket.on('vote-poll', ({ pollId, optionIndex }) => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    // Buscar la encuesta
+    const pollIndex = room.polls.findIndex(poll => poll.id === pollId);
+    if (pollIndex === -1) return;
+
+    const poll = room.polls[pollIndex];
+    
+    // Verificar si el usuario ya votó
+    if (poll.voters.includes(participant.userId)) {
+        console.log(`Usuario ${participant.userName} intentó votar más de una vez en la encuesta ${pollId}`);
+        return;
+    }
+
+    // Verificar si la opción es válida
+    if (optionIndex < 0 || optionIndex >= poll.options.length) {
+        console.log(`Usuario ${participant.userName} intentó votar por una opción inválida en la encuesta ${pollId}`);
+        return;
+    }
+
+    // Registrar voto
+    poll.results[optionIndex]++;
+    poll.voters.push(participant.userId);
+    
+    console.log(`Usuario ${participant.userName} votó en la encuesta ${pollId}, opción: ${poll.options[optionIndex]}`);
+
+    // Actualizar la encuesta en la sala
+    room.polls[pollIndex] = poll;
+
+    // Notificar a todos los participantes
+    io.to(socket.salaId).emit('poll-updated', poll);
+});
+
+socket.on('close-poll', ({ pollId }) => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    // Solo los instructores pueden cerrar encuestas
+    if (participant.userType !== 'instructor') {
+        console.log(`Usuario ${participant.userName} intentó cerrar una encuesta sin ser instructor`);
+        return;
+    }
+
+    // Buscar la encuesta
+    const pollIndex = room.polls.findIndex(poll => poll.id === pollId);
+    if (pollIndex === -1) return;
+
+    // Marcar como inactiva
+    room.polls[pollIndex].active = false;
+    
+    console.log(`Encuesta ${pollId} cerrada por ${participant.userName}`);
+
+    // Notificar a todos los participantes
+    io.to(socket.salaId).emit('poll-closed', { pollId });
+});
+
+socket.on('get-chat-history', () => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    // Enviar los últimos 50 mensajes
+    const recentMessages = room.messages.slice(-50);
+    socket.emit('chat-history', recentMessages);
+});
+```
+
+c) Asegúrate de que los eventos para compartir pantalla estén presentes:
+```javascript
+socket.on('screen-sharing-started', () => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (participant) {
+        participant.isScreenSharing = true;
+        io.to(socket.salaId).emit('participant-screen-sharing', {
+            participantId: socket.id,
+            userId: participant.userId,
+            userName: participant.userName,
+            isSharing: true
+        });
+        console.log(`Usuario ${participant.userName} comenzó a compartir pantalla en la sala ${socket.salaId}`);
+    }
+});
+
+socket.on('screen-sharing-stopped', () => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (participant) {
+        participant.isScreenSharing = false;
+        io.to(socket.salaId).emit('participant-screen-sharing', {
+            participantId: socket.id,
+            userId: participant.userId,
+            userName: participant.userName,
+            isSharing: false
+        });
+        console.log(`Usuario ${participant.userName} dejó de compartir pantalla en la sala ${socket.salaId}`);
+    }
+});
+```
+
+d) Asegúrate de que el manejo de mensajes de chat esté correcto:
+```javascript
+socket.on('send-chat-message', message => {
+    const room = rooms.get(socket.salaId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    const messageData = {
+        id: Date.now(),
+        text: message.text,
+        sender: participant.userName,
+        senderId: socket.id,
+        userId: participant.userId,
+        timestamp: new Date().toISOString()
+    };
+    
+    room.messages.push(messageData);
+    console.log(`Mensaje de chat de ${participant.userName} en sala ${socket.salaId}: ${message.text}`);
+    
+    // Enviar a todos los participantes de la sala
+    io.to(socket.salaId).emit('chat-message', messageData);
+});
+```
+
+4. Guarda el archivo presionando Ctrl+X, luego Y, y finalmente Enter.
+
+5. Reinicia el servicio usando el botón "Manual Deploy" > "Deploy latest commit" en el panel de control de Render.
+
+6. Verifica los logs para asegurarte de que el servidor se ha reiniciado correctamente sin errores.
+
+Estos cambios permitirán que el servidor maneje correctamente las encuestas, la compartición de pantalla y los mensajes de chat entre los participantes. 
