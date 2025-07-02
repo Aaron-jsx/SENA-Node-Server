@@ -9,6 +9,6 @@ set /p mensaje=Mensaje:
 git commit -m "%mensaje%"
 
 echo Haciendo push a GitHub...
-git push origin main
+git push origin master
 
 pause
